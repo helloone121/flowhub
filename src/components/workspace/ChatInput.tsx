@@ -79,7 +79,7 @@ export function ChatInput() {
 
     // 4. 检查 key（mock 跳过）
     const meta = AI_MODELS[model];
-    if (!meta.mock && !apiKeys[model]) {
+    if (!meta.mock && !(apiKeys[model as keyof typeof apiKeys] ?? "")) {
       pushAiMessage(currentSessionId, {
         role: "ai",
         model,
@@ -103,7 +103,7 @@ export function ChatInput() {
       {
         provider: model,
         messages: history,
-        apiKey: apiKeys[model],
+        apiKey: apiKeys[model as keyof typeof apiKeys] ?? "",
         systemHint:
           "你是 FlowHub 调度中枢的 AI 协作者。用户偏好：中文回复、结构化输出、简洁排版、优先用数据说话。",
       },

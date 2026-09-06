@@ -52,7 +52,7 @@ export function ModelSwitch() {
           }}
         >
           {list.map((mm) => {
-            const hasKey = mm.mock || apiKeys[mm.id];
+            const hasKey = mm.mock || (apiKeys[mm.id as keyof typeof apiKeys] ?? "");
             return (
               <button
                 key={mm.id}

@@ -55,7 +55,7 @@ export function Settings() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           messages: [{ role: "user", content: "ping" }],
-          apiKey: apiKeys[m],
+          apiKey: apiKeys[m as keyof typeof apiKeys] ?? "",
           model: meta.model,
         }),
       });
@@ -85,7 +85,7 @@ export function Settings() {
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {AI_LIST.map((m) => {
-            const key = apiKeys[m.id] ?? "";
+            const key = apiKeys[m.id as keyof typeof apiKeys] ?? "";
             const connected = m.mock || key.length > 0;
             const showKey = showKeyMap[m.id] ?? false;
             return (
