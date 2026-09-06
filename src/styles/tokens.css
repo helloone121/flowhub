@@ -1,0 +1,129 @@
+/* =========================================================================
+   FlowHub Design Tokens — v0.1
+   风格：深色玻璃拟态 + 极光渐变
+   适用：Web 应用 / 桌面端
+   ========================================================================= */
+
+:root {
+  /* ---------- 颜色 · 基础 ---------- */
+  --color-bg: #030014;             /* 主背景：深空紫黑 */
+  --color-surface-1: rgba(255, 255, 255, 0.04);   /* 卡片背景 1 */
+  --color-surface-2: rgba(255, 255, 255, 0.06);   /* 卡片背景 2（hover/激活） */
+  --color-surface-3: rgba(255, 255, 255, 0.08);   /* 输入/气泡 */
+  --color-border:   rgba(255, 255, 255, 0.12);    /* 默认描边 */
+  --color-border-strong: rgba(255, 255, 255, 0.18);
+
+  /* ---------- 颜色 · 文字 ---------- */
+  --color-text-primary:   #FFFFFF;
+  --color-text-secondary: #E9E9F0;
+  --color-text-tertiary:  #C9C9D4;
+  --color-text-muted:     #A9A9B7;
+  --color-text-disabled:  #71717F;
+  --color-text-placeholder: #71717F;
+
+  /* ---------- 颜色 · 品牌极光 ----------
+     注：以 FlowHub-设计系统.md 第 14 条为准：
+     Kimi = 紫 #9381FF，DeepSeek = 蓝 #2EA7FF，Claude = 珊瑚 #D97757，Midjourney = 金 #F5C542
+  */
+  --color-aurora-blue:   #2EA7FF;  /* DeepSeek 主色 */
+  --color-aurora-blue-soft: #7CC4FF;
+  --color-aurora-purple: #9381FF;  /* Kimi 主色 */
+  --color-aurora-purple-soft: #B4A7FF;
+  --color-aurora-cyan:   #13DDC4;  /* 完成态 / 实时 */
+  --color-aurora-amber:  #F5C542;  /* Midjourney / 生成中 */
+  --color-aurora-coral:  #D97757;  /* Claude / 警告 */
+  --color-brand-grad-start: #2EA7FF;
+  --color-brand-grad-end:   #9381FF;
+
+  /* ---------- 颜色 · 语义 ---------- */
+  --color-status-running: var(--color-aurora-cyan);
+  --color-status-pending: var(--color-aurora-amber);
+  --color-status-queued:  #8E8E9C;
+  --color-status-error:   #FF5C5C;
+
+  /* ---------- 渐变 ---------- */
+  --grad-brand:   linear-gradient(to right, var(--color-brand-grad-start), var(--color-brand-grad-end));
+  --grad-aurora:  linear-gradient(to right, #13DDC4, #2EA7FF);
+  --grad-glow-blue:  radial-gradient(circle, rgba(46,167,255,0.22), rgba(46,167,255,0));
+  --grad-glow-purple: radial-gradient(circle, rgba(147,129,255,0.20), rgba(147,129,255,0));
+  --grad-glow-cyan:  radial-gradient(circle, rgba(19,221,196,0.13), rgba(19,221,196,0));
+
+  /* ---------- 字体 ---------- */
+  --font-family-sans: "Inter", "Noto Sans SC", -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-family-mono: "JetBrains Mono", "SF Mono", "Menlo", monospace;
+
+  /* ---------- 字号 / 行高 / 字重 ---------- */
+  --fs-display: 40px;  --lh-display: 1.2;
+  --fs-h1: 28px;       --lh-h1: 1.3;
+  --fs-h2: 20px;       --lh-h2: 1.3;
+  --fs-h3: 16px;       --lh-h3: 1.4;
+  --fs-body: 13px;     --lh-body: 1.5;
+  --fs-body-lg: 14px;  --lh-body-lg: 1.5;
+  --fs-body-sm: 12px;  --lh-body-sm: 1.5;
+  --fs-label: 11px;    --lh-label: 1.4;
+  --fs-tag: 10px;      --lh-tag: 1.4;
+
+  --fw-regular: 400;
+  --fw-medium:  500;
+  --fw-semibold: 600;
+  --fw-bold:    700;
+
+  /* ---------- 间距（4 像素栅格） ---------- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 14px;
+  --space-5: 16px;
+  --space-6: 20px;
+  --space-7: 24px;
+  --space-8: 28px;
+  --space-9: 32px;
+  --space-10: 48px;
+  --space-11: 56px;
+
+  /* ---------- 圆角 ---------- */
+  --radius-sm:  8px;
+  --radius-md:  10px;
+  --radius-lg:  12px;
+  --radius-xl:  14px;
+  --radius-2xl: 16px;
+  --radius-pill: 999px;
+
+  /* ---------- 阴影 / 发光 ---------- */
+  --shadow-card: 0 1px 0 rgba(255,255,255,0.04) inset;
+  --shadow-elev-1: 0 8px 24px rgba(0,0,0,0.32);
+  --shadow-elev-2: 0 16px 48px rgba(0,0,0,0.48);
+  --glow-blue:   0 0 24px rgba(46,167,255,0.35);
+  --glow-purple: 0 0 24px rgba(147,129,255,0.35);
+  --glow-cyan:   0 0 16px rgba(19,221,196,0.35);
+
+  /* ---------- 布局尺寸 ---------- */
+  --sidebar-w: 248px;
+  --sidebar-r-w: 304px;
+  --topbar-h: 60px;
+  --topbar-h-mini: 56px;
+  --content-max: 1440px;
+  --input-h: 52px;
+  --avatar-sm: 24px;
+  --avatar-md: 32px;
+
+  /* ---------- 动效 ---------- */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+}
+
+/* =========================================================================
+   浅色主题（预留，本版未启用）
+   ========================================================================= */
+[data-theme="light"] {
+  --color-bg: #FFFFFF;
+  --color-surface-1: #F7F7F9;
+  --color-surface-2: #EFEFF3;
+  --color-surface-3: #FFFFFF;
+  --color-border: rgba(0,0,0,0.08);
+  --color-text-primary: #0A0A14;
+  --color-text-secondary: #1A1A23;
+  --color-text-muted: #4A4A58;
+  --color-text-disabled: #71717F;
+}
