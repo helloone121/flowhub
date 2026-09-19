@@ -63,9 +63,10 @@ export async function POST(
       model: body.model || config.defaultModel,
       messages,
       stream: true,
-      temperature: 0.7,
-      // Kimi K3 是推理模型，默认 reasoning_effort=max 较慢；日常对话用 low 提速
-      ...(provider === "kimi" ? { reasoning_effort: "low" } : {}),
+      // Kimi K3 是推理模型：temperature 只允许 1（不传即用默认 1），且支持 reasoning_effort
+      ...(provider === "kimi"
+        ? { reasoning_effort: "low" }
+        : { temperature: 0.7 }),
     }),
   });
 
