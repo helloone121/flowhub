@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useFlowHub } from "@/lib/store";
 import { AI_MODELS } from "@/lib/ai-meta";
 import type { ModelId } from "@/lib/types";
@@ -20,6 +21,15 @@ export function SessionList() {
   const setSearch = useFlowHub((s) => s.setSearch);
   const selectSession = useFlowHub((s) => s.selectSession);
   const newSession = useFlowHub((s) => s.newSession);
+  const deleteSession = useFlowHub((s) => s.deleteSession);
+
+  // 待确认删除的会话 id；3 秒不操作自动取消，防误删
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!confirmId) return;
+    const t = setTimeout(() => setConfirmId(null), 3000);
+    return () => clearTimeout(t);
+  }, [confirmId]);
 
   const filtered = sessions.filter((s) =>
     search ? s.title.toLowerCase().includes(search.toLowerCase()) : true
@@ -92,29 +102,90 @@ export function SessionList() {
             {items.map((s) => {
               const active = s.id === currentId;
               const color = AI_MODELS[s.model].color;
+              const confirming = confirmId === s.id;
               return (
-                <button
+                <div
                   key={s.id}
-                  onClick={() => selectSession(s.id)}
-                  className="w-full flex items-center gap-2 h-9 px-2.5 rounded-md cursor-pointer transition text-left"
+                  className="group w-full flex items-center gap-1 h-9 pl-2.5 pr-1.5 rounded-md transition"
                   style={{
-                    background: active ? "rgba(147,129,255,0.12)" : "transparent",
+                    background: active
+                      ? "rgba(147,129,255,0.12)"
+                      : "transparent",
                   }}
                 >
-                  <span
-                    className="rounded-pill shrink-0"
-                    style={{ width: 8, height: 8, background: color }}
-                  />
-                  <span
-                    className="text-body-sm truncate flex-1"
-                    style={{ color: active ? "#E9E9F0" : "#A9A9B7" }}
+                  <button
+                    onClick={() => selectSession(s.id)}
+                    className="flex items-center gap-2 flex-1 min-w-0 text-left cursor-pointer"
                   >
-                    {s.title}
-                  </span>
-                  <span className="text-tag text-text-disabled shrink-0">
-                    {s.time}
-                  </span>
-                </button>
+                    <span
+                      className="rounded-pill shrink-0"
+                      style={{ width: 8, height: 8, background: color }}
+                    />
+                    <span
+                      className="text-body-sm truncate"
+                      style={{ color: active ? "#E9E9F0" : "#A9A9B7" }}
+                    >
+                      {s.title}
+                    </span>
+                  </button>
+
+                  {confirming ? (
+                    <span className="flex items-center gap-0.5 shrink-0">
+                      <button
+                        onClick={() => {
+                          deleteSession(s.id);
+                          setConfirmId(null);
+                          toast(`已删除会话「${s.title}」`, "#FF5C5C");
+                        }}
+                        className="text-tag px-1.5 py-0.5 rounded transition hover:bg-red-500/15"
+                        style={{ color: "#FF7A7A" }}
+                        title="确认删除"
+                      >
+                        删除
+                      </button>
+                      <button
+                        onClick={() => setConfirmId(null)}
+                        className="w-5 h-5 flex items-center justify-center rounded text-text-muted hover:text-text-primary hover:bg-white/10 transition"
+                        title="取消"
+                        aria-label="取消删除"
+                      >
+                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none">
+                          <path
+                            d="M18 6L6 18M6 6l12 12"
+                            stroke="currentColor"
+                            strokeWidth={2.5}
+                            strokeLinecap="round"
+                          />
+                        </svg>
+                      </button>
+                    </span>
+                  ) : (
+                    <>
+                      <span className="text-tag text-text-disabled shrink-0 group-hover:hidden">
+                        {s.time}
+                      </span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setConfirmId(s.id);
+                        }}
+                        className="shrink-0 w-5 h-5 hidden group-hover:flex items-center justify-center rounded text-text-disabled hover:text-[#FF7A7A] hover:bg-white/10 transition"
+                        title="删除会话"
+                        aria-label={`删除会话 ${s.title}`}
+                      >
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none">
+                          <path
+                            d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6h14"
+                            stroke="currentColor"
+                            strokeWidth={1.8}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      </button>
+                    </>
+                  )}
+                </div>
               );
             })}
           </div>
