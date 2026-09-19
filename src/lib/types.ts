@@ -37,6 +37,14 @@ export interface Session {
   createdAt: number;
 }
 
+/** 多模型对比时的单列结果 */
+export interface CompareColumn {
+  model: ModelId;
+  content: string;
+  ms?: number; // 耗时
+  error?: string;
+}
+
 /** 单条消息 */
 export interface ChatMessage {
   id: string;
@@ -46,6 +54,8 @@ export interface ChatMessage {
   color?: string;
   time?: string;
   tokens?: number; // 本条消息估算 token 数
+  /** 多模型对比轮：存在时 MessageList 渲染并排结果 */
+  compare?: CompareColumn[];
 }
 
 /** 持久记忆 */
@@ -57,6 +67,8 @@ export interface Memory {
   title: string;
   content: string;
   createdAt: number;
+  /** 来源：seed=内置示例（不参与注入） ai=对话自动提取 user=手动新建 */
+  source?: "seed" | "ai" | "user";
 }
 
 /** 子任务（调度流水线节点） */
@@ -69,6 +81,9 @@ export interface Subtask {
   status: SubtaskStatus;
   output: string;
   progress: number; // 0-100
+  /** 发给执行模型的完整指令 */
+  prompt?: string;
+  error?: string;
 }
 
 /** 执行日志条目 */
@@ -103,6 +118,10 @@ export interface DispatchTask {
   createdAt: number;
   tokenUsed: number;
   costYuan: number;
+  /** AI 正在拆解子任务 */
+  parsing?: boolean;
+  /** 全案汇总（真实 AI 生成） */
+  summary?: string;
 }
 
 /** 页面路由 */

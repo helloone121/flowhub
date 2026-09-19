@@ -8,6 +8,10 @@ interface ChatBody {
   apiKey?: string;
   systemHint?: string;
   model?: string;
+  /** 默认 true 流式；false 时一次性返回 OpenAI JSON */
+  stream?: boolean;
+  /** "json" 时透传 response_format（DeepSeek JSON mode） */
+  responseFormat?: "json";
 }
 
 /**
@@ -29,7 +33,7 @@ export async function POST(
 
   // ---------- Mock 提供方 ----------
   if (provider === "claude" || provider === "midjourney") {
-    return mockStream(provider, body);
+    return mockStream(provider, body, body.stream === false);
   }
 
   // ---------- 真实 OpenAI 兼容提供方 ----------
@@ -62,11 +66,15 @@ export async function POST(
     body: JSON.stringify({
       model: body.model || config.defaultModel,
       messages,
-      stream: true,
+      stream: body.stream !== false,
       // Kimi K3 是推理模型：temperature 只允许 1（不传即用默认 1），且支持 reasoning_effort
       ...(provider === "kimi"
         ? { reasoning_effort: "low" }
         : { temperature: 0.7 }),
+      // DeepSeek 等支持 JSON mode：要求输出严格 JSON
+      ...(body.responseFormat === "json"
+        ? { response_format: { type: "json_object" } }
+        : {}),
     }),
   });
 
@@ -78,6 +86,13 @@ export async function POST(
       }),
       { status: 502, headers: { "Content-Type": "application/json" } }
     );
+  }
+
+  // 非流式：直接透传上游 JSON（含 CORS 同域无忧）
+  if (body.stream === false) {
+    return new Response(upstream.body, {
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+    });
   }
 
   // 透传 SSE 流
@@ -113,10 +128,22 @@ function processEnv(key: string): string | undefined {
 }
 
 // ---------- Mock 实现 ----------
-function mockStream(provider: string, body: ChatBody): Response {
+function mockStream(provider: string, body: ChatBody, once = false): Response {
   const last = body.messages.filter((m) => m.role === "user").slice(-1)[0];
   const userText = last?.content ?? "";
   const lines = pickMockLines(provider, userText);
+
+  // 非流式：拼成一条普通 OpenAI JSON
+  if (once) {
+    return new Response(
+      JSON.stringify({
+        choices: [
+          { message: { role: "assistant", content: lines.join("") }, index: 0 },
+        ],
+      }),
+      { headers: { "Content-Type": "application/json; charset=utf-8" } }
+    );
+  }
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({

@@ -4,11 +4,15 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useFlowHub } from "@/lib/store";
 import { AI_MODELS } from "@/lib/ai-meta";
 import { autoRoute } from "@/lib/routing";
-import { streamChat, buildChatHistory } from "@/lib/ai-client";
+import { streamChat, buildHistoryForModel } from "@/lib/ai-client";
 import { extractPdfText } from "@/lib/pdf";
-import type { ModelId } from "@/lib/types";
+import { pickHelper, extractMemories, buildMemoryContext } from "@/lib/memory-ai";
+import type { CompareColumn, ModelId } from "@/lib/types";
 import { toast } from "@/components/ui";
 import { useNewTaskModal } from "@/components/modals";
+
+/** 可参与真实对比/调度的模型（排除 mock） */
+const REAL_MODELS: ModelId[] = ["kimi", "deepseek"];
 
 /** 附件：文本类文件直接读取；PDF 经 pdf.js 提取文字 */
 interface Attachment {
@@ -37,6 +41,10 @@ export function ChatInput() {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [parsing, setParsing] = useState<string | null>(null);
+  // 单聊 / 多模型对比
+  const [mode, setMode] = useState<"single" | "compare">("single");
+  const [compareModels, setCompareModels] = useState<ModelId[]>(["kimi", "deepseek"]);
+  const [comparing, setComparing] = useState<CompareColumn[] | null>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -52,8 +60,29 @@ export function ChatInput() {
   const pushAiMessage = useFlowHub((s) => s.pushAiMessage);
   const routeFor = useFlowHub((s) => s.routeFor);
   const setModel = useFlowHub((s) => s.setModel);
+  const memories = useFlowHub((s) => s.memories);
+  const addMemories = useFlowHub((s) => s.addMemories);
 
-  const { open: openNewTask, setInitialDesc } = useNewTaskModal();
+  const BASE_HINT =
+    "你是 FlowHub 调度中枢的 AI 协作者。用户偏好：中文回复、结构化输出、简洁排版、优先用数据说话。";
+
+  /** 长回复后静默抽取记忆（autoMemory 开关控制） */
+  const maybeExtractMemories = useCallback(
+    async (userText: string, aiText: string) => {
+      const st = useFlowHub.getState();
+      if (!st.prefs.autoMemory) return;
+      const helper = pickHelper(st.apiKeys);
+      if (!helper) return;
+      const items = await extractMemories(userText, aiText, helper, st.memories);
+      if (items.length > 0) {
+        st.addMemories(items);
+        toast(`已沉淀 ${items.length} 条记忆`, "#9381FF");
+      }
+    },
+    []
+  );
+
+  const { open: openNewTask } = useNewTaskModal();
 
   // 自动路由提示（不强制切换，只显示）
   const routeHint =
@@ -144,26 +173,119 @@ export function ChatInput() {
     return `${intro}\n\n${blocks.join("\n\n")}`;
   };
 
+  /** 拼接带记忆的 systemHint */
+  const hintWithMemory = (composed: string) => {
+    const memCtx = buildMemoryContext(memories, composed);
+    return memCtx ? `${BASE_HINT}\n\n${memCtx}` : BASE_HINT;
+  };
+
   async function handleSend() {
     const t = text.trim();
     if ((!t && attachments.length === 0) || !currentSessionId || parsing) return;
+    if (typing || comparing) return;
 
     // 1. / 触发调度任务（附件不参与调度）
     if (t.startsWith("/")) {
       const desc = t.slice(1).trim();
       setText("");
-      if (desc) {
-        setInitialDesc(desc);
-        openNewTask();
-      } else {
-        openNewTask();
-      }
+      // 直接把描述带入弹窗（openNewTask 无参会清空 initialDesc）
+      openNewTask(desc || undefined);
       return;
     }
 
     // 合成最终发送内容（文本 + 附件）
     const composed = composeWithAttachments(t, attachments);
+    const history = messages;
+    pushUserMessage(currentSessionId, composed);
+    setText("");
+    setAttachments([]);
 
+    // ---------- 对比模式：同一句话并发给多个真实模型 ----------
+    if (mode === "compare") {
+      const models = compareModels.filter(
+        (m) => (apiKeys[m as keyof typeof apiKeys] ?? "").length > 0
+      );
+      if (models.length === 0) {
+        pushAiMessage(currentSessionId, {
+          role: "ai",
+          model: "kimi",
+          color: AI_MODELS.kimi.color,
+          time: nowHHMM(),
+          content: "对比模式至少需要一个已配置的 API key（Kimi 或 DeepSeek）。请在「设置」页填入后重试。",
+        });
+        return;
+      }
+      if (models.length < compareModels.length) {
+        toast("部分模型未配置 key，已自动跳过", "#F5C542");
+      }
+      const systemHint = hintWithMemory(composed);
+      const acc: Record<string, string> = {};
+      const errs: Record<string, string> = {};
+      const startedAt: Record<string, number> = {};
+      setComparing(models.map((m) => ({ model: m, content: "" })));
+
+      await Promise.all(
+        models.map(
+          (model) =>
+            new Promise<void>((resolve) => {
+              startedAt[model] = performance.now();
+              const msgs = buildHistoryForModel(history, model, systemHint);
+              msgs.push({ role: "user", content: composed });
+              streamChat(
+                {
+                  provider: model,
+                  messages: msgs,
+                  apiKey: apiKeys[model as keyof typeof apiKeys] ?? "",
+                },
+                {
+                  onToken: (delta) => {
+                    acc[model] = (acc[model] ?? "") + delta;
+                    const live = acc[model];
+                    setComparing((prev) =>
+                      prev
+                        ? prev.map((c) =>
+                            c.model === model ? { ...c, content: live } : c
+                          )
+                        : prev
+                    );
+                  },
+                  onDone: (full) => {
+                    acc[model] = full || acc[model] || "";
+                    resolve();
+                  },
+                  onError: (err) => {
+                    errs[model] = err;
+                    resolve();
+                  },
+                }
+              );
+            })
+        )
+      );
+
+      const cols: CompareColumn[] = models.map((m) => ({
+        model: m,
+        content: acc[m] ?? "",
+        ms: Math.round(performance.now() - (startedAt[m] ?? performance.now())),
+        error: errs[m],
+      }));
+      pushAiMessage(currentSessionId, {
+        role: "ai",
+        time: nowHHMM(),
+        content: "",
+        compare: cols,
+      });
+      setComparing(null);
+
+      // 取最长成功回复抽一次记忆
+      const best = cols
+        .filter((c) => !c.error && c.content)
+        .sort((a, b) => b.content.length - a.content.length)[0];
+      if (best) void maybeExtractMemories(composed, best.content);
+      return;
+    }
+
+    // ---------- 单聊模式 ----------
     // 2. 自动路由（基于合成内容，带长附件时更容易正确路由到 Kimi）
     let model = currentModel;
     if (prefs.autoRoute) {
@@ -175,12 +297,7 @@ export function ChatInput() {
       }
     }
 
-    // 3. push 用户消息 + 清空输入
-    pushUserMessage(currentSessionId, composed);
-    setText("");
-    setAttachments([]);
-
-    // 4. 检查 key（mock 跳过）
+    // 3. 检查 key（mock 跳过）
     const meta = AI_MODELS[model];
     if (!meta.mock && !(apiKeys[model as keyof typeof apiKeys] ?? "")) {
       pushAiMessage(currentSessionId, {
@@ -193,22 +310,17 @@ export function ChatInput() {
       return;
     }
 
-    // 5. 流式调用
+    // 4. 流式调用（携带记忆上下文）
     setTyping({ model, color: meta.color, content: "" });
-    const history = buildChatHistory(
-      messages,
-      "你是 FlowHub 调度中枢的 AI 协作者。用户偏好：中文回复、结构化输出、简洁排版、优先用数据说话。"
-    );
-    history.push({ role: "user", content: composed });
+    const msgs = buildHistoryForModel(history, model, hintWithMemory(composed));
+    msgs.push({ role: "user", content: composed });
 
     let acc = "";
     await streamChat(
       {
         provider: model,
-        messages: history,
+        messages: msgs,
         apiKey: apiKeys[model as keyof typeof apiKeys] ?? "",
-        systemHint:
-          "你是 FlowHub 调度中枢的 AI 协作者。用户偏好：中文回复、结构化输出、简洁排版、优先用数据说话。",
       },
       {
         onToken: (delta) => {
@@ -217,13 +329,15 @@ export function ChatInput() {
         },
         onDone: (full) => {
           setTyping(null);
+          const text2 = full || acc;
           pushAiMessage(currentSessionId, {
             role: "ai",
             model,
             color: meta.color,
             time: nowHHMM(),
-            content: full || acc,
+            content: text2,
           });
+          void maybeExtractMemories(composed, text2);
         },
         onError: (err) => {
           setTyping(null);
@@ -239,9 +353,86 @@ export function ChatInput() {
     );
   }
 
+  const toggleCompareModel = (m: ModelId) => {
+    setCompareModels((prev) => {
+      if (prev.includes(m)) {
+        return prev.length > 1 ? prev.filter((x) => x !== m) : prev;
+      }
+      return [...prev, m];
+    });
+  };
+
   return (
     <div className="px-7 pb-6">
-      {routeHint && (
+      {/* 模式切换：单聊 / 多模型对比 */}
+      <div className="flex items-center gap-2 mb-2 flex-wrap">
+        <div
+          className="inline-flex items-center rounded-lg p-0.5"
+          style={{ background: "rgba(255,255,255,0.04)" }}
+        >
+          {(
+            [
+              ["single", "单聊"],
+              ["compare", "⚡ 多模型对比"],
+            ] as const
+          ).map(([id, label]) => {
+            const active = mode === id;
+            return (
+              <button
+                key={id}
+                onClick={() => setMode(id)}
+                className="px-3 h-7 rounded-md text-label font-medium transition"
+                style={{
+                  background: active ? "rgba(147,129,255,0.18)" : "transparent",
+                  color: active ? "#C9C0FF" : "#A9A9B7",
+                }}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+        {mode === "compare" && (
+          <>
+            {REAL_MODELS.map((m) => {
+              const hasKey = (apiKeys[m as keyof typeof apiKeys] ?? "").length > 0;
+              const active = compareModels.includes(m);
+              return (
+                <button
+                  key={m}
+                  onClick={() => hasKey && toggleCompareModel(m)}
+                  disabled={!hasKey}
+                  title={hasKey ? AI_MODELS[m].name : `${AI_MODELS[m].name} 未配置 API key`}
+                  className="inline-flex items-center gap-1.5 px-2.5 h-7 rounded-pill text-label transition"
+                  style={{
+                    background: active
+                      ? `${AI_MODELS[m].color}22`
+                      : "rgba(255,255,255,0.04)",
+                    color: active ? AI_MODELS[m].color : "#71717F",
+                    border: active
+                      ? `1px solid ${AI_MODELS[m].color}66`
+                      : "1px solid rgba(255,255,255,0.08)",
+                    opacity: hasKey ? 1 : 0.45,
+                    cursor: hasKey ? "pointer" : "not-allowed",
+                  }}
+                >
+                  <span
+                    className="rounded-pill"
+                    style={{ width: 6, height: 6, background: AI_MODELS[m].color }}
+                  />
+                  {AI_MODELS[m].name}
+                  {!hasKey && <span className="opacity-70">· 未配置</span>}
+                </button>
+              );
+            })}
+            <span className="text-tag text-text-disabled">
+              同一句话并发多答 · 结果并排对比
+            </span>
+          </>
+        )}
+      </div>
+
+      {routeHint && mode === "single" && (
         <div
           className="flex items-center gap-2 px-3 py-1.5 rounded-md mb-2 text-label"
           style={{ background: "rgba(255,255,255,0.03)" }}
@@ -393,7 +584,7 @@ export function ChatInput() {
         />
         <button
           onClick={handleSend}
-          disabled={(!text.trim() && attachments.length === 0) || typing != null || parsing != null}
+          disabled={(!text.trim() && attachments.length === 0) || typing != null || parsing != null || comparing != null}
           className="shrink-0 mb-1 w-9 h-9 rounded-md flex items-center justify-center text-white transition disabled:opacity-40"
           style={{ background: "var(--grad-brand)" }}
         >
@@ -440,6 +631,62 @@ export function ChatInput() {
               <span className="typing-dot" />
             </div>
           )}
+        </div>
+      )}
+
+      {/* 多模型对比 · 流式进行中 */}
+      {comparing && (
+        <div className="mt-4 mb-1 animate-fade-up">
+          <div className="flex items-center gap-2 mb-2.5">
+            <span className="text-body-sm font-semibold text-text-secondary">
+              多模型对比
+            </span>
+            <span className="text-tag text-text-muted">
+              {comparing.length} 路同时回答中…
+            </span>
+          </div>
+          <div
+            className="grid gap-3"
+            style={{
+              gridTemplateColumns: `repeat(${Math.min(comparing.length, 2)}, minmax(0, 1fr))`,
+            }}
+          >
+            {comparing.map((c) => {
+              const color = AI_MODELS[c.model].color;
+              return (
+                <div
+                  key={c.model}
+                  className="rounded-2xl px-3.5 py-3 min-h-[72px]"
+                  style={{
+                    background: "rgba(255,255,255,0.04)",
+                    border: `1px solid ${color}33`,
+                  }}
+                >
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <span className="rounded-pill" style={{ width: 7, height: 7, background: color }} />
+                    <span className="text-label font-semibold" style={{ color }}>
+                      {AI_MODELS[c.model].name}
+                    </span>
+                  </div>
+                  {c.content ? (
+                    <div className="text-body-sm text-text-tertiary leading-[21px] whitespace-pre-line">
+                      {c.content}
+                      <span
+                        className="inline-block w-1.5 h-3 ml-0.5 align-middle animate-pulse-soft"
+                        style={{ background: color }}
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1">
+                      <span className="typing-dot" />
+                      <span className="typing-dot" />
+                      <span className="typing-dot" />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>

@@ -2,13 +2,23 @@
 
 import { useFlowHub } from "@/lib/store";
 import { useMemoryDetailModal } from "@/components/modals";
+import { toast } from "@/components/ui";
+import type { Memory } from "@/lib/types";
+
+const SOURCE_BADGE: Record<NonNullable<Memory["source"]>, { label: string; color: string }> = {
+  ai: { label: "AI 提取", color: "#13DDC4" },
+  user: { label: "手动", color: "#9381FF" },
+  seed: { label: "示例", color: "#71717F" },
+};
 
 export function MemoryPanel() {
   const memories = useFlowHub((s) => s.memories);
   const setPage = useFlowHub((s) => s.setPage);
+  const clearSeedMemories = useFlowHub((s) => s.clearSeedMemories);
   const { open: openMemory } = useMemoryDetailModal();
 
   const featured = memories.slice(0, 5);
+  const seedCount = memories.filter((m) => m.source === "seed").length;
 
   return (
     <aside
@@ -31,23 +41,50 @@ export function MemoryPanel() {
         跨 AI 跨会话共享 · 自动注入新对话
       </div>
 
-      <div className="flex flex-col gap-2.5 mt-2">
-        {featured.map((m) => (
-          <button
-            key={m.id}
-            onClick={() => openMemory(m.id)}
-            className="text-left px-3 py-2.5 rounded-lg transition hover:bg-white/[0.07]"
-            style={{ background: "rgba(255,255,255,0.04)" }}
-          >
-            <div className="flex items-center gap-2 mb-1.5">
-              <span className="rounded-pill" style={{ width: 6, height: 6, background: m.color }} />
-              <span className="text-label text-text-muted">{m.label}</span>
-            </div>
-            <div className="text-body-sm text-text-tertiary leading-[18px] line-clamp-2">
-              {m.title} · {m.content}
-            </div>
-          </button>
-        ))}
+      {seedCount > 0 && (
+        <button
+          onClick={() => {
+            clearSeedMemories();
+            toast(`已清空 ${seedCount} 条示例记忆`, "#71717F");
+          }}
+          className="self-start text-tag text-text-muted hover:text-text-tertiary transition"
+          style={{
+            borderBottom: "1px dashed rgba(255,255,255,0.2)",
+          }}
+        >
+          清空 {seedCount} 条示例记忆
+        </button>
+      )}
+
+      <div className="flex flex-col gap-2.5 mt-1">
+        {featured.map((m) => {
+          const src = SOURCE_BADGE[m.source ?? "user"];
+          return (
+            <button
+              key={m.id}
+              onClick={() => openMemory(m.id)}
+              className="text-left px-3 py-2.5 rounded-lg transition hover:bg-white/[0.07]"
+              style={{ background: "rgba(255,255,255,0.04)" }}
+            >
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className="rounded-pill" style={{ width: 6, height: 6, background: m.color }} />
+                <span className="text-label text-text-muted">{m.label}</span>
+                <span
+                  className="ml-auto px-1.5 py-px rounded-pill text-tag"
+                  style={{
+                    color: src.color,
+                    background: `${src.color}1A`,
+                  }}
+                >
+                  {src.label}
+                </span>
+              </div>
+              <div className="text-body-sm text-text-tertiary leading-[18px] line-clamp-2">
+                {m.title} · {m.content}
+              </div>
+            </button>
+          );
+        })}
       </div>
 
       <button

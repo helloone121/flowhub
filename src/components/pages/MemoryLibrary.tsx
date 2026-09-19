@@ -2,17 +2,18 @@
 
 import { useState } from "react";
 import { useFlowHub } from "@/lib/store";
-import { MEMORY_LABELS } from "@/lib/ai-meta";
+import { MEMORY_CAT_COLORS, MEMORY_LABELS } from "@/lib/ai-meta";
 import { PrimaryButton, GhostButton, Modal, TextInput, toast } from "@/components/ui";
 import { useMemoryDetailModal } from "@/components/modals";
-import type { MemoryCategory } from "@/lib/types";
+import type { Memory, MemoryCategory } from "@/lib/types";
 
 const CATS: MemoryCategory[] = ["background", "pref", "decision", "data"];
-const CAT_COLORS: Record<MemoryCategory, string> = {
-  background: "#13DDC4",
-  pref: "#2EA7FF",
-  decision: "#9381FF",
-  data: "#F5C542",
+const CAT_COLORS = MEMORY_CAT_COLORS as Record<MemoryCategory, string>;
+
+const SOURCE_BADGE: Record<NonNullable<Memory["source"]>, { label: string; color: string }> = {
+  ai: { label: "AI 提取", color: "#13DDC4" },
+  user: { label: "手动", color: "#9381FF" },
+  seed: { label: "示例", color: "#71717F" },
 };
 
 export function MemoryLibrary() {
@@ -21,7 +22,10 @@ export function MemoryLibrary() {
   const setFilter = useFlowHub((s) => s.setMemoryFilter);
   const addMemory = useFlowHub((s) => s.addMemory);
   const exportAll = useFlowHub((s) => s.exportAll);
+  const clearSeedMemories = useFlowHub((s) => s.clearSeedMemories);
   const { open: openMemory } = useMemoryDetailModal();
+
+  const seedCount = memories.filter((m) => m.source === "seed").length;
 
   const [creating, setCreating] = useState(false);
   const [draftCat, setDraftCat] = useState<MemoryCategory>("background");
@@ -59,6 +63,16 @@ export function MemoryLibrary() {
           </p>
         </div>
         <div className="flex gap-2">
+          {seedCount > 0 && (
+            <GhostButton
+              onClick={() => {
+                clearSeedMemories();
+                toast(`已清空 ${seedCount} 条示例记忆`, "#71717F");
+              }}
+            >
+              清空示例（{seedCount}）
+            </GhostButton>
+          )}
           <GhostButton
             onClick={() => {
               const json = exportAll();
@@ -121,6 +135,17 @@ export function MemoryLibrary() {
                 <span className="text-label text-text-muted">
                   {MEMORY_LABELS[m.category]}
                 </span>
+                {(() => {
+                  const src = SOURCE_BADGE[m.source ?? "user"];
+                  return (
+                    <span
+                      className="ml-1 px-1.5 py-px rounded-pill text-tag"
+                      style={{ color: src.color, background: `${src.color}1A` }}
+                    >
+                      {src.label}
+                    </span>
+                  );
+                })()}
               </div>
               <span className="text-tag text-text-disabled">
                 #{m.id.slice(-4)}

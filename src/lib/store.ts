@@ -16,7 +16,7 @@ import type {
   Subtask,
 } from "./types";
 import { AI_MODELS } from "./ai-meta";
-import { autoRoute, dispatchParse } from "./routing";
+import { autoRoute, type ParsedSubtask } from "./routing";
 import { estimateTokens } from "./tokens";
 
 // ---------- 工具 ----------
@@ -29,6 +29,15 @@ const nowHHMM = () => {
     String(d.getHours()).padStart(2, "0") +
     ":" +
     String(d.getMinutes()).padStart(2, "0")
+  );
+};
+
+const nowHHMMSS = () => {
+  const d = new Date();
+  return (
+    nowHHMM() +
+    ":" +
+    String(d.getSeconds()).padStart(2, "0")
   );
 };
 
@@ -194,48 +203,11 @@ const DEMO_MEMORIES: Memory[] = [
   },
 ];
 
-const DEMO_SUBTASKS: Subtask[] = [
-  {
-    id: "s1",
-    name: "Kimi · 行业趋势与竞品调研",
-    model: "kimi",
-    color: "#9381FF",
-    desc: "扫描 38 份行业报告，提炼 6 条趋势结论与竞品传播打法，标记 3 个可引用数据点。",
-    status: "done",
-    output: "12 页结构化笔记 · 3m12s",
-    progress: 100,
-  },
-  {
-    id: "s2",
-    name: "DeepSeek · 传播策略数据推演",
-    model: "deepseek",
-    color: "#2EA7FF",
-    desc: "基于近三年发布会传播数据，推演 3 套策略的曝光曲线与转化漏斗，推荐方案 B。",
-    status: "done",
-    output: "推演报告 + 对比图表 · 1m48s",
-    progress: 100,
-  },
-  {
-    id: "s3",
-    name: "Midjourney · 主视觉海报生成",
-    model: "midjourney",
-    color: "#F5C542",
-    desc: "科技感主视觉 · 极光渐变风格，基于记忆库中的品牌色板，已产出 3 / 5 张候选。",
-    status: "running",
-    output: "3 / 5 张候选生成中",
-    progress: 60,
-  },
-  {
-    id: "s4",
-    name: "Claude · 全套发布会文案",
-    model: "claude",
-    color: "#D97757",
-    desc: "等待主视觉与调研结论作为输入，预计接入后 5 分钟内完成全套文案。",
-    status: "queued",
-    output: "等待上游结果",
-    progress: 0,
-  },
-];
+// 示例记忆统一打 seed 标：仅展示用，不参与对话注入，可一键清空
+const DEMO_MEMORIES_TYPED: Memory[] = DEMO_MEMORIES.map((m) => ({
+  ...m,
+  source: "seed" as const,
+}));
 
 // ---------- Store 定义 ----------
 interface FlowHubState {
@@ -271,9 +243,16 @@ interface FlowHubState {
   setModel: (m: ModelId) => void;
   pushUserMessage: (sessionId: string, text: string) => void;
   pushAiMessage: (sessionId: string, msg: Omit<ChatMessage, "id">) => void;
+  patchMessage: (
+    sessionId: string,
+    messageId: string,
+    patch: Partial<ChatMessage>
+  ) => void;
   routeFor: (text: string) => { model: ModelId; reason: string };
 
   addMemory: (m: Omit<Memory, "id" | "createdAt">) => void;
+  addMemories: (ms: Omit<Memory, "id" | "createdAt">[]) => void;
+  clearSeedMemories: () => void;
   updateMemory: (id: string, patch: Partial<Memory>) => void;
   deleteMemory: (id: string) => void;
   exportAll: () => string;
@@ -283,8 +262,14 @@ interface FlowHubState {
   setDispatchMode: (m: DispatchMode) => void;
 
   startDispatch: (desc: string) => DispatchTask;
-  advanceSubtask: (taskId: string, subtaskId: string, progress: number) => void;
-  completeSubtask: (taskId: string, subtaskId: string, output: string) => void;
+  setTaskParsed: (taskId: string, parsed: ParsedSubtask[]) => void;
+  setSubtask: (
+    taskId: string,
+    subtaskId: string,
+    patch: Partial<Subtask>
+  ) => void;
+  setTaskSummary: (taskId: string, summary: string) => void;
+  addTaskUsage: (taskId: string, tokens: number, costYuan: number) => void;
   addLog: (taskId: string, text: string) => void;
   resetDispatch: () => void;
 }
@@ -308,28 +293,14 @@ export const useFlowHub = create<FlowHubState>()(
       // 持久化数据
       sessions: DEMO_SESSIONS,
       messages: DEMO_MESSAGES,
-      memories: DEMO_MEMORIES,
+      memories: DEMO_MEMORIES_TYPED,
       apiKeys: {},
       prefs: DEFAULT_PREFS,
       currentSessionId: "whitepaper",
       currentModel: "kimi",
       dispatchMode: "auto",
-      dispatchTask: {
-        id: "demo",
-        description: "下个月要开产品发布会，帮我做一套完整方案：行业背景、传播策略、主视觉和全套文案。",
-        mode: "auto",
-        subtasks: DEMO_SUBTASKS,
-        logs: [
-          {
-            id: "log1",
-            time: "14:30:02",
-            text: "调度大脑完成拆解，4 个子任务并行分发",
-          },
-        ],
-        createdAt: Date.now() - 1800_000,
-        tokenUsed: 86000,
-        costYuan: 1.28,
-      },
+      // 调度任务只存在于内存：执行中有真实流式连接，刷新后僵尸状态无意义
+      dispatchTask: null,
 
       setPage: (p) => set({ currentPage: p }),
       setSearch: (q) => set({ searchQuery: q }),
@@ -457,6 +428,16 @@ export const useFlowHub = create<FlowHubState>()(
         }));
       },
 
+      patchMessage: (sessionId, messageId, patch) =>
+        set((s) => ({
+          messages: {
+            ...s.messages,
+            [sessionId]: (s.messages[sessionId] ?? []).map((m) =>
+              m.id === messageId ? { ...m, ...patch } : m
+            ),
+          },
+        })),
+
       routeFor: (text) => {
         if (!get().prefs.autoRoute) {
           return { model: get().currentModel, reason: "手动指定" };
@@ -467,9 +448,29 @@ export const useFlowHub = create<FlowHubState>()(
       addMemory: (m) =>
         set((s) => ({
           memories: [
-            { ...m, id: uid("mem"), createdAt: Date.now() },
+            { ...m, source: m.source ?? "user", id: uid("mem"), createdAt: Date.now() },
             ...s.memories,
           ],
+        })),
+
+      addMemories: (ms) => {
+        if (ms.length === 0) return;
+        set((s) => ({
+          memories: [
+            ...ms.map((m) => ({
+              ...m,
+              source: (m.source ?? "ai") as Memory["source"],
+              id: uid("mem"),
+              createdAt: Date.now(),
+            })),
+            ...s.memories,
+          ],
+        }));
+      },
+
+      clearSeedMemories: () =>
+        set((s) => ({
+          memories: s.memories.filter((m) => m.source !== "seed"),
         })),
 
       updateMemory: (id, patch) =>
@@ -499,28 +500,19 @@ export const useFlowHub = create<FlowHubState>()(
 
       setDispatchMode: (m) => set({ dispatchMode: m }),
 
+      // 创建"拆解中"任务；真实子任务由 Dispatch 页调 AI 拆解后 setTaskParsed 填入
       startDispatch: (desc) => {
-        const parsed = dispatchParse(desc);
-        const subtasks: Subtask[] = parsed.map((p, i) => ({
-          id: `st_${i}_${Date.now().toString(36)}`,
-          name: p.name,
-          model: p.model,
-          color: AI_MODELS[p.model].color,
-          desc: p.desc,
-          status: i === 0 ? "running" : "queued",
-          output: i === 0 ? "执行中" : "等待上游",
-          progress: 0,
-        }));
         const task: DispatchTask = {
           id: uid("task"),
           description: desc,
           mode: get().dispatchMode,
-          subtasks,
+          subtasks: [],
+          parsing: true,
           logs: [
             {
               id: uid("log"),
-              time: nowHHMM() + ":00",
-              text: `调度大脑完成拆解，${subtasks.length} 个子任务并行分发`,
+              time: nowHHMMSS(),
+              text: "任务已接收，调度大脑正在拆解子任务…",
             },
           ],
           createdAt: Date.now(),
@@ -531,43 +523,61 @@ export const useFlowHub = create<FlowHubState>()(
         return task;
       },
 
-      advanceSubtask: (taskId, subtaskId, progress) =>
+      setTaskParsed: (taskId, parsed) =>
+        set((s) => {
+          if (!s.dispatchTask || s.dispatchTask.id !== taskId) return s;
+          const stamp = Date.now().toString(36);
+          const subtasks: Subtask[] = parsed.map((p, i) => ({
+            id: `st_${i}_${stamp}`,
+            name: p.name,
+            model: p.model,
+            color: AI_MODELS[p.model].color,
+            desc: p.desc,
+            prompt: p.prompt,
+            status: "queued",
+            output: "",
+            progress: 0,
+          }));
+          return {
+            dispatchTask: { ...s.dispatchTask, parsing: false, subtasks },
+          };
+        }),
+
+      setSubtask: (taskId, subtaskId, patch) =>
         set((s) => {
           if (!s.dispatchTask || s.dispatchTask.id !== taskId) return s;
           return {
             dispatchTask: {
               ...s.dispatchTask,
               subtasks: s.dispatchTask.subtasks.map((t) =>
-                t.id === subtaskId
-                  ? { ...t, progress: Math.min(100, progress), status: "running" }
-                  : t
+                t.id === subtaskId ? { ...t, ...patch } : t
               ),
             },
           };
         }),
 
-      completeSubtask: (taskId, subtaskId, output) =>
+      setTaskSummary: (taskId, summary) =>
         set((s) => {
           if (!s.dispatchTask || s.dispatchTask.id !== taskId) return s;
-          const subtasks = s.dispatchTask.subtasks.map((t) =>
-            t.id === subtaskId
-              ? { ...t, status: "done" as const, progress: 100, output }
-              : t
-          );
-          // 找下一个排队中
-          const next = subtasks.find((t) => t.status === "queued");
-          if (next) next.status = "running";
-          return { dispatchTask: { ...s.dispatchTask, subtasks } };
+          return { dispatchTask: { ...s.dispatchTask, summary } };
+        }),
+
+      addTaskUsage: (taskId, tokens, costYuan) =>
+        set((s) => {
+          if (!s.dispatchTask || s.dispatchTask.id !== taskId) return s;
+          return {
+            dispatchTask: {
+              ...s.dispatchTask,
+              tokenUsed: s.dispatchTask.tokenUsed + Math.max(0, Math.round(tokens)),
+              costYuan: s.dispatchTask.costYuan + Math.max(0, costYuan),
+            },
+          };
         }),
 
       addLog: (taskId, text) =>
         set((s) => {
           if (!s.dispatchTask || s.dispatchTask.id !== taskId) return s;
-          const entry: LogEntry = {
-            id: uid("log"),
-            time: nowHHMM() + ":" + String(Math.floor(Math.random() * 60)).padStart(2, "0"),
-            text,
-          };
+          const entry: LogEntry = { id: uid("log"), time: nowHHMMSS(), text };
           return {
             dispatchTask: {
               ...s.dispatchTask,
@@ -581,6 +591,7 @@ export const useFlowHub = create<FlowHubState>()(
     {
       name: "flowhub-store",
       // 只持久化数据，不持久化视图状态
+      // dispatchTask 不持久化：执行中持有真实流式连接，刷新后残留只可能是僵尸状态
       partialize: (s) => ({
         sessions: s.sessions,
         messages: s.messages,
@@ -590,26 +601,39 @@ export const useFlowHub = create<FlowHubState>()(
         currentSessionId: s.currentSessionId,
         currentModel: s.currentModel,
         dispatchMode: s.dispatchMode,
-        dispatchTask: s.dispatchTask,
       }),
-      // hydrate 后强制重置 demo task 的 subtasks
-      // 避免之前无限循环跑完的"全部完成"状态残留
-      onRehydrateStorage: () => (state) => {
-        if (state && state.dispatchTask && state.dispatchTask.id === "demo") {
-          state.dispatchTask = {
-            ...state.dispatchTask,
-            subtasks: DEMO_SUBTASKS.map((t) => ({ ...t })),
-            logs: [
-              {
-                id: "log1",
-                time: "14:30:02",
-                text: "调度大脑完成拆解，4 个子任务并行分发",
-              },
-            ],
-            tokenUsed: 86000,
-            costYuan: 1.28,
-          };
+      version: 1,
+      // v0 → v1：旧版本（≤2026-09）种子记忆没有 source 字段，
+      // 按标题与当前种子集匹配补标为 seed（示例记忆不参与对话注入、可一键清空）；
+      // 用户自建记忆无 source 时保持原样（按手动记忆对待）。
+      // 同时丢弃旧版本可能持久化的僵尸调度任务。
+      migrate: (persisted, fromVersion) => {
+        type Persisted = Pick<
+          FlowHubState,
+          | "sessions"
+          | "messages"
+          | "memories"
+          | "apiKeys"
+          | "prefs"
+          | "currentSessionId"
+          | "currentModel"
+          | "dispatchMode"
+        >;
+        const s = persisted as Partial<Persisted> & { dispatchTask?: unknown };
+        if (fromVersion < 1 && Array.isArray(s.memories)) {
+          const seedTitles = new Set(DEMO_MEMORIES_TYPED.map((m) => m.title));
+          s.memories = s.memories.map((m) =>
+            m.source == null && seedTitles.has(m.title)
+              ? { ...m, source: "seed" as const }
+              : m
+          );
         }
+        if (s.dispatchTask !== undefined) delete s.dispatchTask;
+        return s as Persisted;
+      },
+      onRehydrateStorage: () => (state) => {
+        // 兜底：merge 后内存态也不保留任何调度任务
+        if (state) state.dispatchTask = null;
       },
     }
   )

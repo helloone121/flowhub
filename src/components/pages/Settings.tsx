@@ -74,9 +74,24 @@ export function Settings() {
   return (
     <div className="max-w-[1024px] mx-auto px-7 pt-6 pb-12">
       <h1 className="text-h1 font-semibold text-text-primary mb-1.5">设置</h1>
-      <p className="text-body-sm text-text-muted mb-6">
+      <p className="text-body-sm text-text-muted mb-4">
         连接 AI 账号 · 调整调度偏好 · 管理数据
       </p>
+
+      {!apiKeys.deepseek && (
+        <div
+          className="mb-6 px-4 py-3 rounded-xl text-label leading-[18px]"
+          style={{
+            background: "rgba(46,167,255,0.08)",
+            border: "1px solid rgba(46,167,255,0.25)",
+            color: "#7CC4FF",
+          }}
+        >
+          {apiKeys.kimi
+            ? "建议配置 DeepSeek API key：记忆抽取、任务拆解、全案汇总等辅助调用会优先走 DeepSeek，成本约为 Kimi 的 1/6；未配置时这些调用回退 Kimi。"
+            : "尚未配置任何真实 API key。多模型对比、记忆自动沉淀、任务调度执行都依赖 Kimi 或 DeepSeek 的 key，填入后即可启用全部真实功能。"}
+        </div>
+      )}
 
       {/* AI 模型连接 */}
       <div className="mb-7">

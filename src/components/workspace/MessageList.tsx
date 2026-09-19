@@ -5,6 +5,7 @@ import { useFlowHub } from "@/lib/store";
 import { AI_MODELS } from "@/lib/ai-meta";
 import { ContextBudget } from "./ContextBudget";
 import { ModelSwitch } from "./ModelSwitch";
+import { CompareCard, CompareIntro } from "./CompareCard";
 
 export function MessageList() {
   const currentSessionId = useFlowHub((s) => s.currentSessionId);
@@ -61,6 +62,29 @@ export function MessageList() {
                   style={{ background: "rgba(255,255,255,0.08)" }}
                 >
                   <UserBubbleContent content={m.content} />
+                </div>
+              </div>
+            );
+          }
+          // 多模型对比轮
+          if (m.compare && m.compare.length > 0) {
+            return (
+              <div key={m.id} className="mb-5 animate-fade-up">
+                <CompareIntro cols={m.compare} />
+                <div
+                  className="grid gap-3"
+                  style={{
+                    gridTemplateColumns: `repeat(${Math.min(m.compare.length, 2)}, minmax(0, 1fr))`,
+                  }}
+                >
+                  {m.compare.map((c) => (
+                    <CompareCard
+                      key={`${m.id}-${c.model}`}
+                      sessionId={currentSessionId}
+                      messageId={m.id}
+                      col={c}
+                    />
+                  ))}
                 </div>
               </div>
             );

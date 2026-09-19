@@ -67,6 +67,8 @@ export interface ParsedSubtask {
   name: string;
   model: ModelId;
   desc: string;
+  /** 给执行模型的完整指令（AI 拆解时生成；规则版留空则用 desc） */
+  prompt?: string;
 }
 
 export function dispatchParse(description: string): ParsedSubtask[] {
