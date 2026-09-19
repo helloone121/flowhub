@@ -64,6 +64,8 @@ export async function POST(
       messages,
       stream: true,
       temperature: 0.7,
+      // Kimi K3 是推理模型，默认 reasoning_effort=max 较慢；日常对话用 low 提速
+      ...(provider === "kimi" ? { reasoning_effort: "low" } : {}),
     }),
   });
 
@@ -94,7 +96,7 @@ const PROVIDER_CONFIG: Record<
   kimi: {
     endpoint: "https://api.moonshot.cn/v1/chat/completions",
     envKey: "MOONSHOT_API_KEY",
-    defaultModel: "moonshot-v1-32k",
+    defaultModel: "kimi-k3",
   },
   deepseek: {
     endpoint: "https://api.deepseek.com/v1/chat/completions",

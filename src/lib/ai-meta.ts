@@ -13,7 +13,7 @@ export const AI_MODELS: Record<ModelId, AIModel> = {
     color: "#9381FF",
     capability: "长文本",
     endpoint: "https://api.moonshot.cn/v1/chat/completions",
-    model: "moonshot-v1-32k",
+    model: "kimi-k3",
     mock: false,
     connected: true,
   },
