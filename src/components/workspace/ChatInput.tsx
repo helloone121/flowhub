@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useFlowHub } from "@/lib/store";
 import { AI_MODELS } from "@/lib/ai-meta";
 import { autoRoute } from "@/lib/routing";
@@ -9,10 +9,30 @@ import type { ModelId } from "@/lib/types";
 import { toast } from "@/components/ui";
 import { useNewTaskModal } from "@/components/modals";
 
+/** 附件：MVP 仅支持文本类文件，内容随消息以文本形式发给 AI */
+interface Attachment {
+  name: string;
+  size: number;
+  content: string;
+}
+
+const SINGLE_LIMIT = 200 * 1024; // 单文件 200KB
+const TOTAL_LIMIT = 500 * 1024; // 全部附件合计 500KB
+const ACCEPT =
+  ".txt,.md,.markdown,.csv,.json,.log,.xml,.yaml,.yml,.html,.htm,.css,.js,.mjs,.cjs,.ts,.tsx,.jsx,.py,.java,.go,.rs,.c,.h,.cpp,.cc,.sql,.sh,.bash,.ini,.conf,.toml,.env,.vue,.php,.rb,.swift,.kt,text/*,application/json";
+const TEXT_EXT = [
+  "txt","md","markdown","csv","json","log","xml","yaml","yml","html","htm","css",
+  "js","mjs","cjs","ts","tsx","jsx","py","java","go","rs","c","h","cpp","cc","sql",
+  "sh","bash","ini","conf","toml","env","vue","php","rb","swift","kt",
+];
+
 export function ChatInput() {
   const [text, setText] = useState("");
   const [typing, setTyping] = useState<{ model: ModelId; color: string; content: string } | null>(null);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [dragOver, setDragOver] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   // store
   const currentSessionId = useFlowHub((s) => s.currentSessionId);
@@ -45,11 +65,54 @@ export function ChatInput() {
     }
   }, [text]);
 
+  /** 读取并校验一批文件，加入附件列表 */
+  const ingestFiles = useCallback(
+    async (fileList: FileList | File[]) => {
+      const files = Array.from(fileList);
+      const added: Attachment[] = [];
+      for (const f of files) {
+        const ext = f.name.split(".").pop()?.toLowerCase() ?? "";
+        const isText =
+          TEXT_EXT.includes(ext) || f.type.startsWith("text/") || f.type === "application/json";
+        if (!isText) {
+          toast(`「${f.name}」不是文本文件，MVP 暂不支持（图片/PDF 留待 v2）`, "#F5C542");
+          continue;
+        }
+        if (f.size > SINGLE_LIMIT) {
+          toast(`「${f.name}」超过 200KB 单文件上限`, "#FF5C5C");
+          continue;
+        }
+        const currentTotal =
+          attachments.reduce((s, a) => s + a.size, 0) +
+          added.reduce((s, a) => s + a.size, 0);
+        if (currentTotal + f.size > TOTAL_LIMIT) {
+          toast("附件总大小超过 500KB 上限，请分批发送", "#FF5C5C");
+          break;
+        }
+        const content = await f.text();
+        added.push({ name: f.name, size: f.size, content });
+      }
+      if (added.length) setAttachments((prev) => [...prev, ...added]);
+    },
+    [attachments]
+  );
+
+  /** 把附件拼进发送文本，用明确分隔符包裹便于 AI 识别 */
+  const composeWithAttachments = (t: string, atts: Attachment[]) => {
+    if (atts.length === 0) return t;
+    const blocks = atts.map(
+      (a) =>
+        `【附件：${a.name}（${(a.size / 1024).toFixed(1)} KB）】\n<<<FILE:${a.name}>>>\n${a.content}\n<<<END FILE>>>`
+    );
+    const intro = t.trim() || "请阅读以下附件内容，总结关键要点并指出需要注意的问题。";
+    return `${intro}\n\n${blocks.join("\n\n")}`;
+  };
+
   async function handleSend() {
     const t = text.trim();
-    if (!t || !currentSessionId) return;
+    if ((!t && attachments.length === 0) || !currentSessionId) return;
 
-    // 1. / 触发调度任务
+    // 1. / 触发调度任务（附件不参与调度）
     if (t.startsWith("/")) {
       const desc = t.slice(1).trim();
       setText("");
@@ -62,10 +125,13 @@ export function ChatInput() {
       return;
     }
 
-    // 2. 自动路由（按需切换 model）
+    // 合成最终发送内容（文本 + 附件）
+    const composed = composeWithAttachments(t, attachments);
+
+    // 2. 自动路由（基于合成内容，带长附件时更容易正确路由到 Kimi）
     let model = currentModel;
     if (prefs.autoRoute) {
-      const r = routeFor(t);
+      const r = routeFor(composed);
       if (r.model !== currentModel) {
         setModel(r.model);
         model = r.model;
@@ -74,8 +140,9 @@ export function ChatInput() {
     }
 
     // 3. push 用户消息 + 清空输入
-    pushUserMessage(currentSessionId, t);
+    pushUserMessage(currentSessionId, composed);
     setText("");
+    setAttachments([]);
 
     // 4. 检查 key（mock 跳过）
     const meta = AI_MODELS[model];
@@ -96,7 +163,7 @@ export function ChatInput() {
       messages,
       "你是 FlowHub 调度中枢的 AI 协作者。用户偏好：中文回复、结构化输出、简洁排版、优先用数据说话。"
     );
-    history.push({ role: "user", content: t });
+    history.push({ role: "user", content: composed });
 
     let acc = "";
     await streamChat(
@@ -166,15 +233,83 @@ export function ChatInput() {
         </div>
       )}
 
+      {/* 附件标签栏 */}
+      {attachments.length > 0 && (
+        <div className="flex flex-wrap gap-2 mb-2">
+          {attachments.map((a, i) => (
+            <span
+              key={`${a.name}-${i}`}
+              className="inline-flex items-center gap-1.5 pl-2.5 pr-1.5 py-1 rounded-md text-label"
+              style={{
+                background: "rgba(147,129,255,0.12)",
+                border: "1px solid rgba(147,129,255,0.35)",
+                color: "#C9C0FF",
+              }}
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none">
+                <path
+                  d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              <span className="max-w-[160px] truncate">{a.name}</span>
+              <span className="opacity-60">{(a.size / 1024).toFixed(1)}KB</span>
+              <button
+                onClick={() => setAttachments((prev) => prev.filter((_, idx) => idx !== i))}
+                className="ml-0.5 w-4 h-4 flex items-center justify-center rounded hover:bg-white/15 transition"
+                aria-label="移除附件"
+              >
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none">
+                  <path
+                    d="M18 6L6 18M6 6l12 12"
+                    stroke="currentColor"
+                    strokeWidth={2.5}
+                    strokeLinecap="round"
+                  />
+                </svg>
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
       <div
         className="flex items-end gap-3 rounded-2xl px-3.5 py-2 transition"
         style={{
-          background: "rgba(255,255,255,0.05)",
-          border: "1px solid rgba(255,255,255,0.1)",
+          background: dragOver ? "rgba(147,129,255,0.08)" : "rgba(255,255,255,0.05)",
+          border: `1px solid ${dragOver ? "rgba(147,129,255,0.55)" : "rgba(255,255,255,0.1)"}`,
           minHeight: "var(--input-h)",
         }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(false);
+          if (e.dataTransfer.files?.length) ingestFiles(e.dataTransfer.files);
+        }}
       >
-        <button className="text-text-muted hover:text-text-primary transition shrink-0 mb-1.5">
+        <input
+          ref={fileRef}
+          type="file"
+          multiple
+          accept={ACCEPT}
+          className="hidden"
+          onChange={(e) => {
+            if (e.target.files?.length) ingestFiles(e.target.files);
+            e.target.value = "";
+          }}
+        />
+        <button
+          onClick={() => fileRef.current?.click()}
+          title="上传文本文件（txt/md/csv/json/代码等，单文件≤200KB）"
+          className="text-text-muted hover:text-text-primary transition shrink-0 mb-1.5"
+        >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
             <path
               d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"
@@ -202,7 +337,7 @@ export function ChatInput() {
         />
         <button
           onClick={handleSend}
-          disabled={!text.trim() || typing != null}
+          disabled={(!text.trim() && attachments.length === 0) || typing != null}
           className="shrink-0 mb-1 w-9 h-9 rounded-md flex items-center justify-center text-white transition disabled:opacity-40"
           style={{ background: "var(--grad-brand)" }}
         >

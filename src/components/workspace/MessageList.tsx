@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { useFlowHub } from "@/lib/store";
 import { AI_MODELS } from "@/lib/ai-meta";
 import { ContextBudget } from "./ContextBudget";
@@ -60,7 +60,7 @@ export function MessageList() {
                   className="max-w-[60%] px-4 py-2.5 rounded-2xl text-body leading-[20px] text-text-secondary"
                   style={{ background: "rgba(255,255,255,0.08)" }}
                 >
-                  {m.content}
+                  <UserBubbleContent content={m.content} />
                 </div>
               </div>
             );
@@ -84,4 +84,60 @@ export function MessageList() {
       </div>
     </>
   );
+}
+
+/**
+ * 解析用户消息中的附件块（ChatInput.composeWithAttachments 生成）
+ * 正文正常显示；附件折叠成卡片，点开可查看原文
+ */
+const FILE_BLOCK_RE =
+  /【附件：(.+?)（([\d.]+) KB）】\n<<<FILE:[\s\S]*?>>>\n([\s\S]*?)\n<<<END FILE>>>/g;
+
+function UserBubbleContent({ content }: { content: string }) {
+  if (!content.includes("<<<FILE:")) {
+    return <span className="whitespace-pre-line">{content}</span>;
+  }
+  const parts: ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  FILE_BLOCK_RE.lastIndex = 0;
+  let key = 0;
+  while ((match = FILE_BLOCK_RE.exec(content)) !== null) {
+    if (match.index > lastIndex) {
+      const intro = content.slice(lastIndex, match.index).trim();
+      if (intro) parts.push(<div key={`t${key++}`} className="whitespace-pre-line mb-2">{intro}</div>);
+    }
+    const [, name, kb, body] = match;
+    parts.push(
+      <details
+        key={`f${key++}`}
+        className="rounded-lg my-1 text-body-sm"
+        style={{ background: "rgba(147,129,255,0.10)", border: "1px solid rgba(147,129,255,0.3)" }}
+      >
+        <summary className="cursor-pointer select-none px-2.5 py-1.5 flex items-center gap-1.5 list-none">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}>
+            <path
+              d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
+              stroke="#B4A7FF"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+          <span className="font-medium" style={{ color: "#C9C0FF" }}>{name}</span>
+          <span className="opacity-50">{kb} KB · 点击展开原文</span>
+        </summary>
+        <pre
+          className="px-2.5 pb-2.5 pt-1 overflow-x-auto text-tag leading-[18px] whitespace-pre"
+          style={{ color: "rgba(255,255,255,0.65)", maxHeight: 260 }}
+        >
+          {body}
+        </pre>
+      </details>
+    );
+    lastIndex = match.index + match[0].length;
+  }
+  const tail = content.slice(lastIndex).trim();
+  if (tail) parts.push(<div key={`t${key++}`} className="whitespace-pre-line mt-2">{tail}</div>);
+  return <>{parts}</>;
 }
