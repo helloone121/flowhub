@@ -5,21 +5,26 @@ import { useFlowHub } from "@/lib/store";
 import { AI_MODELS } from "@/lib/ai-meta";
 import { autoRoute } from "@/lib/routing";
 import { streamChat, buildChatHistory } from "@/lib/ai-client";
+import { extractPdfText } from "@/lib/pdf";
 import type { ModelId } from "@/lib/types";
 import { toast } from "@/components/ui";
 import { useNewTaskModal } from "@/components/modals";
 
-/** 附件：MVP 仅支持文本类文件，内容随消息以文本形式发给 AI */
+/** 附件：文本类文件直接读取；PDF 经 pdf.js 提取文字 */
 interface Attachment {
   name: string;
   size: number;
   content: string;
+  /** 附加展示信息，如 "PDF · 12 页" */
+  meta?: string;
 }
 
-const SINGLE_LIMIT = 200 * 1024; // 单文件 200KB
-const TOTAL_LIMIT = 500 * 1024; // 全部附件合计 500KB
+const SINGLE_LIMIT = 200 * 1024; // 文本单文件 200KB
+const TOTAL_LIMIT = 500 * 1024; // 文本附件合计 500KB
+const PDF_FILE_LIMIT = 5 * 1024 * 1024; // PDF 文件 ≤5MB
+const PDF_TEXT_LIMIT = 100_000; // PDF 提取文字 ≤10 万字
 const ACCEPT =
-  ".txt,.md,.markdown,.csv,.json,.log,.xml,.yaml,.yml,.html,.htm,.css,.js,.mjs,.cjs,.ts,.tsx,.jsx,.py,.java,.go,.rs,.c,.h,.cpp,.cc,.sql,.sh,.bash,.ini,.conf,.toml,.env,.vue,.php,.rb,.swift,.kt,text/*,application/json";
+  ".txt,.md,.markdown,.csv,.json,.log,.xml,.yaml,.yml,.html,.htm,.css,.js,.mjs,.cjs,.ts,.tsx,.jsx,.py,.java,.go,.rs,.c,.h,.cpp,.cc,.sql,.sh,.bash,.ini,.conf,.toml,.env,.vue,.php,.rb,.swift,.kt,.pdf,text/*,application/json,application/pdf";
 const TEXT_EXT = [
   "txt","md","markdown","csv","json","log","xml","yaml","yml","html","htm","css",
   "js","mjs","cjs","ts","tsx","jsx","py","java","go","rs","c","h","cpp","cc","sql",
@@ -31,6 +36,7 @@ export function ChatInput() {
   const [typing, setTyping] = useState<{ model: ModelId; color: string; content: string } | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [dragOver, setDragOver] = useState(false);
+  const [parsing, setParsing] = useState<string | null>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -72,10 +78,40 @@ export function ChatInput() {
       const added: Attachment[] = [];
       for (const f of files) {
         const ext = f.name.split(".").pop()?.toLowerCase() ?? "";
+        const isPdf = ext === "pdf" || f.type === "application/pdf";
         const isText =
           TEXT_EXT.includes(ext) || f.type.startsWith("text/") || f.type === "application/json";
+
+        // ---------- PDF 分支：pdf.js 本地提取文字 ----------
+        if (isPdf) {
+          if (f.size > PDF_FILE_LIMIT) {
+            toast(`「${f.name}」超过 5MB 上限`, "#FF5C5C");
+            continue;
+          }
+          setParsing(f.name);
+          try {
+            const { text: pdfText, pages } = await extractPdfText(f, PDF_TEXT_LIMIT);
+            if (pdfText.trim().length < 10) {
+              toast(`「${f.name}」未提取到文字，可能是扫描件/图片版 PDF`, "#F5C542");
+            } else {
+              added.push({
+                name: f.name,
+                size: f.size,
+                content: pdfText,
+                meta: `PDF · ${pages} 页`,
+              });
+            }
+          } catch {
+            toast(`「${f.name}」PDF 解析失败（可能已损坏或加密）`, "#FF5C5C");
+          } finally {
+            setParsing(null);
+          }
+          continue;
+        }
+
+        // ---------- 文本文件分支 ----------
         if (!isText) {
-          toast(`「${f.name}」不是文本文件，MVP 暂不支持（图片/PDF 留待 v2）`, "#F5C542");
+          toast(`「${f.name}」类型暂不支持（图片/Word/Excel 留待后续版本）`, "#F5C542");
           continue;
         }
         if (f.size > SINGLE_LIMIT) {
@@ -86,7 +122,7 @@ export function ChatInput() {
           attachments.reduce((s, a) => s + a.size, 0) +
           added.reduce((s, a) => s + a.size, 0);
         if (currentTotal + f.size > TOTAL_LIMIT) {
-          toast("附件总大小超过 500KB 上限，请分批发送", "#FF5C5C");
+          toast("文本附件总大小超过 500KB 上限，请分批发送", "#FF5C5C");
           break;
         }
         const content = await f.text();
@@ -110,7 +146,7 @@ export function ChatInput() {
 
   async function handleSend() {
     const t = text.trim();
-    if ((!t && attachments.length === 0) || !currentSessionId) return;
+    if ((!t && attachments.length === 0) || !currentSessionId || parsing) return;
 
     // 1. / 触发调度任务（附件不参与调度）
     if (t.startsWith("/")) {
@@ -234,8 +270,28 @@ export function ChatInput() {
       )}
 
       {/* 附件标签栏 */}
-      {attachments.length > 0 && (
+      {(attachments.length > 0 || parsing) && (
         <div className="flex flex-wrap gap-2 mb-2">
+          {parsing && (
+            <span
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-label"
+              style={{
+                background: "rgba(147,129,255,0.08)",
+                border: "1px dashed rgba(147,129,255,0.45)",
+                color: "#C9C0FF",
+              }}
+            >
+              <svg className="animate-spin" width="11" height="11" viewBox="0 0 24 24" fill="none">
+                <path
+                  d="M21 12a9 9 0 1 1-6.22-8.56"
+                  stroke="currentColor"
+                  strokeWidth={2.2}
+                  strokeLinecap="round"
+                />
+              </svg>
+              <span className="max-w-[200px] truncate">正在解析 {parsing}…</span>
+            </span>
+          )}
           {attachments.map((a, i) => (
             <span
               key={`${a.name}-${i}`}
@@ -256,7 +312,7 @@ export function ChatInput() {
                 />
               </svg>
               <span className="max-w-[160px] truncate">{a.name}</span>
-              <span className="opacity-60">{(a.size / 1024).toFixed(1)}KB</span>
+              <span className="opacity-60">{a.meta ?? formatSize(a.size)}</span>
               <button
                 onClick={() => setAttachments((prev) => prev.filter((_, idx) => idx !== i))}
                 className="ml-0.5 w-4 h-4 flex items-center justify-center rounded hover:bg-white/15 transition"
@@ -307,7 +363,7 @@ export function ChatInput() {
         />
         <button
           onClick={() => fileRef.current?.click()}
-          title="上传文本文件（txt/md/csv/json/代码等，单文件≤200KB）"
+          title="上传附件：PDF（≤5MB，自动提取文字）或文本文件（txt/md/csv/json/代码等，≤200KB），也可直接拖入"
           className="text-text-muted hover:text-text-primary transition shrink-0 mb-1.5"
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
@@ -337,7 +393,7 @@ export function ChatInput() {
         />
         <button
           onClick={handleSend}
-          disabled={(!text.trim() && attachments.length === 0) || typing != null}
+          disabled={(!text.trim() && attachments.length === 0) || typing != null || parsing != null}
           className="shrink-0 mb-1 w-9 h-9 rounded-md flex items-center justify-center text-white transition disabled:opacity-40"
           style={{ background: "var(--grad-brand)" }}
         >
@@ -357,6 +413,8 @@ export function ChatInput() {
         <span>Enter 发送 · Shift+Enter 换行</span>
         <span>·</span>
         <span>输入 / 创建调度任务</span>
+        <span>·</span>
+        <span>可拖入 PDF / 文本附件</span>
         <span>·</span>
         <span>当前模型 {AI_MODELS[currentModel].name}</span>
       </div>
@@ -391,4 +449,10 @@ export function ChatInput() {
 function nowHHMM() {
   const d = new Date();
   return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+}
+
+function formatSize(bytes: number) {
+  return bytes >= 1024 * 1024
+    ? `${(bytes / 1024 / 1024).toFixed(1)}MB`
+    : `${(bytes / 1024).toFixed(1)}KB`;
 }

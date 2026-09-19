@@ -26,6 +26,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# pdf.js worker（由 next.config.js 从 node_modules 自动同步）
+/public/pdf.worker.min.mjs
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
