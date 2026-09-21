@@ -5,8 +5,6 @@ import type { PageId } from "@/lib/types";
 
 const NAV: { id: PageId; label: string }[] = [
   { id: "workspace", label: "工作台" },
-  { id: "dispatch", label: "任务调度" },
-  { id: "memory", label: "记忆库" },
   { id: "settings", label: "设置" },
 ];
 

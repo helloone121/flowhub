@@ -124,5 +124,8 @@ export interface DispatchTask {
   summary?: string;
 }
 
-/** 页面路由 */
-export type PageId = "workspace" | "dispatch" | "memory" | "settings";
+/** 顶层页面（任务调度/记忆库已集成进工作台） */
+export type PageId = "workspace" | "settings";
+
+/** 工作台内视图 */
+export type WorkspaceView = "chat" | "task" | "memory";

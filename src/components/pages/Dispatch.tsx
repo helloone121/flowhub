@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { useFlowHub } from "@/lib/store";
 import { AI_MODELS, PRICE_PER_1K } from "@/lib/ai-meta";
 import { streamChat } from "@/lib/ai-client";
@@ -28,19 +28,23 @@ const MODE_LABEL: Record<DispatchMode, string> = {
   relay: "接力执行",
 };
 
+/**
+ * 已启动过 runner 的任务 id（模块级）。
+ * Dispatch 现在挂在工作台三视图内，切走再切回会卸载重挂，
+ * 用模块级 Set 保证每个任务只跑一次；刷新后模块重置，而任务本就不持久化，天然安全。
+ */
+const startedTaskIds = new Set<string>();
+
 export function Dispatch() {
   const task = useFlowHub((s) => s.dispatchTask);
   const prefs = useFlowHub((s) => s.prefs);
   const { open: openNewTask } = useNewTaskModal();
 
-  // 每个任务只允许启动一次（防 effect 重入/无限循环）
-  const startedRef = useRef<Set<string>>(new Set());
-
   useEffect(() => {
     if (!task) return;
     const id = task.id;
-    if (startedRef.current.has(id)) return;
-    startedRef.current.add(id);
+    if (startedTaskIds.has(id)) return;
+    startedTaskIds.add(id);
     void runTask(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task?.id]);

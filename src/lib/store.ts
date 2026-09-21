@@ -14,6 +14,7 @@ import type {
   PageId,
   Session,
   Subtask,
+  WorkspaceView,
 } from "./types";
 import { AI_MODELS } from "./ai-meta";
 import { autoRoute, type ParsedSubtask } from "./routing";
@@ -213,6 +214,8 @@ const DEMO_MEMORIES_TYPED: Memory[] = DEMO_MEMORIES.map((m) => ({
 interface FlowHubState {
   // 视图状态（不持久化）
   currentPage: PageId;
+  /** 工作台内视图：对话 / 任务 / 记忆 */
+  workspaceView: WorkspaceView;
   searchQuery: string;
   memoryFilter: "all" | Memory["category"];
   showKeyMap: Partial<Record<ModelId, boolean>>; // 设置页密钥可见性
@@ -230,6 +233,7 @@ interface FlowHubState {
 
   // ---------- Actions ----------
   setPage: (p: PageId) => void;
+  setWorkspaceView: (v: WorkspaceView) => void;
   setSearch: (q: string) => void;
   setMemoryFilter: (f: "all" | Memory["category"]) => void;
   toggleKeyVisible: (m: ModelId) => void;
@@ -286,6 +290,7 @@ export const useFlowHub = create<FlowHubState>()(
     (set, get) => ({
       // 视图状态
       currentPage: "workspace",
+      workspaceView: "chat",
       searchQuery: "",
       memoryFilter: "all",
       showKeyMap: {},
@@ -303,6 +308,7 @@ export const useFlowHub = create<FlowHubState>()(
       dispatchTask: null,
 
       setPage: (p) => set({ currentPage: p }),
+      setWorkspaceView: (v) => set({ workspaceView: v }),
       setSearch: (q) => set({ searchQuery: q }),
       setMemoryFilter: (f) => set({ memoryFilter: f }),
       toggleKeyVisible: (m) =>
@@ -519,7 +525,8 @@ export const useFlowHub = create<FlowHubState>()(
           tokenUsed: 0,
           costYuan: 0,
         };
-        set({ dispatchTask: task, currentPage: "dispatch" });
+        // 自动切到工作台内的「任务」视图，让用户立刻看到执行进度
+        set({ dispatchTask: task, currentPage: "workspace", workspaceView: "task" });
         return task;
       },
 

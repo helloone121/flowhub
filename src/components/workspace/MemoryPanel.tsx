@@ -13,7 +13,7 @@ const SOURCE_BADGE: Record<NonNullable<Memory["source"]>, { label: string; color
 
 export function MemoryPanel() {
   const memories = useFlowHub((s) => s.memories);
-  const setPage = useFlowHub((s) => s.setPage);
+  const setWorkspaceView = useFlowHub((s) => s.setWorkspaceView);
   const clearSeedMemories = useFlowHub((s) => s.clearSeedMemories);
   const { open: openMemory } = useMemoryDetailModal();
 
@@ -88,7 +88,7 @@ export function MemoryPanel() {
       </div>
 
       <button
-        onClick={() => setPage("memory")}
+        onClick={() => setWorkspaceView("memory")}
         className="text-label text-text-muted hover:text-text-tertiary transition mt-1 text-left"
       >
         查看全部 {memories.length} 条记忆 →

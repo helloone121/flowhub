@@ -1,14 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useFlowHub } from "@/lib/store";
 import { TopBar, MobileNav } from "./TopBar";
 import { AuroraBackdrop, ToastHost } from "./ui";
 import { ModalProvider, NewTaskModal, MemoryDetailModal } from "./modals";
 import { Workspace } from "./pages/Workspace";
-import { Dispatch } from "./pages/Dispatch";
-import { MemoryLibrary } from "./pages/MemoryLibrary";
 import { Settings } from "./pages/Settings";
+import { useFlowHub } from "@/lib/store";
 
 export function AppShell() {
   const currentPage = useFlowHub((s) => s.currentPage);
@@ -33,8 +31,6 @@ export function AppShell() {
       <TopBar />
       <main className="max-w-[1440px] mx-auto">
         {currentPage === "workspace" && <Workspace />}
-        {currentPage === "dispatch" && <Dispatch />}
-        {currentPage === "memory" && <MemoryLibrary />}
         {currentPage === "settings" && <Settings />}
       </main>
       <MobileNav />

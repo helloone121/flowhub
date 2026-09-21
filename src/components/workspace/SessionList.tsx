@@ -5,6 +5,7 @@ import { useFlowHub } from "@/lib/store";
 import { AI_MODELS } from "@/lib/ai-meta";
 import type { ModelId } from "@/lib/types";
 import { toast } from "@/components/ui";
+import { WorkspaceTabs } from "./WorkspaceTabs";
 
 const GROUPS: ModelId[] = ["kimi", "deepseek", "claude", "midjourney"];
 const GROUP_LABELS: Record<ModelId, string> = {
@@ -48,9 +49,12 @@ export function SessionList() {
         borderRight: "1px solid rgba(255,255,255,0.06)",
       }}
     >
+      <WorkspaceTabs />
+
       <button
         onClick={() => {
           newSession("kimi", "新会话", "");
+          useFlowHub.getState().setWorkspaceView("chat");
           toast(`已创建新会话`, "#2EA7FF");
         }}
         className="h-9 rounded-md flex items-center justify-center gap-2 text-body-sm font-medium text-white transition hover:opacity-90"
@@ -114,7 +118,10 @@ export function SessionList() {
                   }}
                 >
                   <button
-                    onClick={() => selectSession(s.id)}
+                    onClick={() => {
+                      selectSession(s.id);
+                      useFlowHub.getState().setWorkspaceView("chat");
+                    }}
                     className="flex items-center gap-2 flex-1 min-w-0 text-left cursor-pointer"
                   >
                     <span
