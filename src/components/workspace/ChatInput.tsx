@@ -297,17 +297,26 @@ export function ChatInput() {
       }
     }
 
-    // 3. 检查 key（mock 跳过）
-    const meta = AI_MODELS[model];
+    // 3. 检查 key（mock 跳过）；当前模型没 key 但别的模型有时，自动切换而不是死板报错
+    let meta = AI_MODELS[model];
     if (!meta.mock && !(apiKeys[model as keyof typeof apiKeys] ?? "")) {
-      pushAiMessage(currentSessionId, {
-        role: "ai",
-        model,
-        color: meta.color,
-        time: nowHHMM(),
-        content: `未检测到 ${meta.name} 的 API key。请在「设置」页填入后重试。`,
-      });
-      return;
+      const alt = REAL_MODELS.find((m) => (apiKeys[m as keyof typeof apiKeys] ?? "").length > 0);
+      if (alt) {
+        const prevName = meta.name;
+        setModel(alt);
+        model = alt;
+        meta = AI_MODELS[alt];
+        toast(`「${prevName}」未配置 key，已自动切换到 ${meta.name}`, meta.color);
+      } else {
+        pushAiMessage(currentSessionId, {
+          role: "ai",
+          model,
+          color: meta.color,
+          time: nowHHMM(),
+          content: `还没有配置任何 API key。请在「设置」页填入 Kimi 或 DeepSeek 的 key 后重试。`,
+        });
+        return;
+      }
     }
 
     // 4. 流式调用（携带记忆上下文）
