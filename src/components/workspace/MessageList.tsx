@@ -7,7 +7,7 @@ import { ContextBudget } from "./ContextBudget";
 import { ModelSwitch } from "./ModelSwitch";
 import { CompareCard, CompareIntro } from "./CompareCard";
 import { GhostButton } from "@/components/ui";
-import type { ChatMessage } from "@/lib/types";
+import type { ChatMessage, ModelId } from "@/lib/types";
 
 export function MessageList() {
   const currentSessionId = useFlowHub((s) => s.currentSessionId);
@@ -15,16 +15,28 @@ export function MessageList() {
   const messages = useFlowHub((s) =>
     s.currentSessionId ? s.messages[s.currentSessionId] ?? [] : []
   );
+  // 任意会话有消息时导出按钮才可用
+  const hasMessages = useFlowHub((s) =>
+    Object.values(s.messages).some((list) => list.length > 0)
+  );
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const session = sessions.find((x) => x.id === currentSessionId);
   const model = AI_MODELS[session?.model ?? "kimi"];
 
+  // 导出全部会话（含左侧历史会话），按侧边栏顺序排列，空会话跳过
   const handleExportPdf = useCallback(() => {
-    if (!messages.length) return;
-    const title = session?.title.replace(" · 进行中", "") ?? "聊天记录";
-    exportChatPdf(messages, title);
-  }, [messages, session?.title]);
+    const all = useFlowHub.getState().messages;
+    const sections = sessions
+      .map((s) => ({
+        title: s.title.replace(" · 进行中", ""),
+        model: s.model,
+        messages: all[s.id] ?? [],
+      }))
+      .filter((sec) => sec.messages.length > 0);
+    if (!sections.length) return;
+    exportChatPdf(sections);
+  }, [sessions]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -55,7 +67,7 @@ export function MessageList() {
         <ModelSwitch />
         <GhostButton
           onClick={handleExportPdf}
-          className={messages.length === 0 ? "opacity-40 pointer-events-none" : ""}
+          className={hasMessages ? "" : "opacity-40 pointer-events-none"}
         >
           导出 PDF
         </GhostButton>
@@ -199,7 +211,14 @@ function stripAttachments(content: string): string {
     .replace(/<<<FILE:[\s\S]*?<<<END FILE>>>/g, "【附件内容省略】");
 }
 
-function exportChatPdf(messages: ChatMessage[], title: string) {
+interface ExportSection {
+  title: string;
+  model: ModelId;
+  messages: ChatMessage[];
+}
+
+/** 单个会话的消息列表 → HTML 片段 */
+function renderMessages(messages: ChatMessage[]): string {
   const parts: string[] = [];
   for (const m of messages) {
     if (m.role === "user") {
@@ -232,13 +251,29 @@ function exportChatPdf(messages: ChatMessage[], title: string) {
       }</div><div class="ai-body">${esc(m.content)}</div></div>`
     );
   }
+  return parts.join("\n");
+}
 
-  const html = `<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><title>${esc(
-    title
-  )} - 聊天记录</title><style>
+function exportChatPdf(sections: ExportSection[]) {
+  const sectionHtml = sections
+    .map((sec, i) => {
+      const color = AI_MODELS[sec.model].color;
+      const name = AI_MODELS[sec.model].name;
+      return `${i > 0 ? '<div class="page-break"></div>' : ""}<div class="sec-head"><span class="dot" style="background:${color}"></span><span style="color:${color}">${esc(name)}</span><span class="sec-title">${esc(sec.title)}</span><span class="sec-count">${sec.messages.length} 条消息</span></div>
+${renderMessages(sec.messages)}`;
+    })
+    .join("\n");
+
+  const html = `<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><title>FlowHub 聊天记录导出</title><style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:#fff;color:#1a1a1a;padding:40px 32px;max-width:820px;margin:0 auto}
-.doc-title{font-size:20px;font-weight:700;margin-bottom:24px;padding-bottom:12px;border-bottom:2px solid #e0e0e0}
+.doc-title{font-size:20px;font-weight:700;margin-bottom:8px;padding-bottom:12px;border-bottom:2px solid #e0e0e0}
+.sec-head{display:flex;align-items:center;gap:8px;margin:28px 0 6px;padding-bottom:8px;border-bottom:1.5px solid #e8e8ee}
+.sec-head .dot{width:10px;height:10px;border-radius:50%;display:inline-block}
+.sec-head span{font-size:13px;font-weight:600}
+.sec-title{font-size:16px;font-weight:700;color:#1a1a1a}
+.sec-count{color:#aaa;font-size:12px;font-weight:400;margin-left:auto}
+.page-break{page-break-before:always}
 .msg-user{display:flex;justify-content:flex-end;margin:16px 0}
 .bubble-user{background:#f0f0f3;border-radius:12px;padding:10px 16px;max-width:72%;font-size:14px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
 .msg-ai{margin:16px 0}
@@ -255,8 +290,8 @@ body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;backgroun
 .foot{margin-top:32px;padding-top:12px;border-top:1px solid #eee;font-size:11px;color:#bbb;text-align:center}
 @media print{body{padding:0;max-width:none}@page{margin:18mm 15mm}}
 </style></head><body>
-<div class="doc-title">${esc(title)}</div>
-${parts.join("\n")}
+<div class="doc-title">FlowHub 聊天记录</div>
+${sectionHtml}
 <div class="foot">FlowHub · ${new Date().toLocaleString("zh-CN")}</div>
 </body></html>`;
 
