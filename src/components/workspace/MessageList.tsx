@@ -260,23 +260,56 @@ ${parts.join("\n")}
 <div class="foot">FlowHub · ${new Date().toLocaleString("zh-CN")}</div>
 </body></html>`;
 
-  const w = window.open("", "_blank");
-  if (!w) {
-    alert("请允许弹窗以导出 PDF");
+  // 用隐藏 iframe 打印：不弹新窗口（避免弹窗拦截），打印预览直接出现在当前页面。
+  // 只触发一次 print，打印结束（或取消）后清理 iframe。
+  const iframe = document.createElement("iframe");
+  iframe.style.position = "fixed";
+  iframe.style.right = "0";
+  iframe.style.bottom = "0";
+  iframe.style.width = "0";
+  iframe.style.height = "0";
+  iframe.style.border = "0";
+  document.body.appendChild(iframe);
+
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    iframe.remove();
+  };
+  // 兜底：60s 后无论结果如何都清理，防止异常残留
+  const failsafe = setTimeout(cleanup, 60_000);
+
+  const doc = iframe.contentWindow?.document;
+  if (!doc) {
+    cleanup();
+    clearTimeout(failsafe);
+    alert("导出失败，请重试");
     return;
   }
-  w.document.write(html);
-  w.document.close();
-  // 等渲染完成后触发打印
-  w.onload = () => {
-    setTimeout(() => w.print(), 200);
-  };
-  // 兜底：onload 可能已触发
-  setTimeout(() => {
+  doc.open();
+  doc.write(html);
+  doc.close();
+
+  let printed = false;
+  const doPrint = () => {
+    if (printed || cleaned) return;
+    printed = true;
     try {
-      w.print();
+      iframe.contentWindow?.focus();
+      iframe.contentWindow?.print();
     } catch {
-      /* 已触发或窗口已关闭 */
+      /* 打印被禁用等情况 */
     }
-  }, 800);
+    clearTimeout(failsafe);
+    // afterprint 在确认/取消后触发；部分浏览器不触发，靠兜底清理
+    iframe.contentWindow?.addEventListener("afterprint", cleanup);
+    setTimeout(cleanup, 5_000);
+  };
+
+  if (doc.readyState === "complete") {
+    setTimeout(doPrint, 100);
+  } else {
+    iframe.addEventListener("load", () => setTimeout(doPrint, 100));
+  }
 }
