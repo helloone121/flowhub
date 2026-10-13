@@ -6,6 +6,7 @@ import { AI_MODELS } from "@/lib/ai-meta";
 import { autoRoute } from "@/lib/routing";
 import { streamChat, buildHistoryForModel } from "@/lib/ai-client";
 import { extractPdfText } from "@/lib/pdf";
+import { extractDocxText } from "@/lib/docx";
 import { pickHelper, extractMemories, buildMemoryContext } from "@/lib/memory-ai";
 import type { CompareColumn, ModelId } from "@/lib/types";
 import { toast } from "@/components/ui";
@@ -26,9 +27,11 @@ interface Attachment {
 const SINGLE_LIMIT = 200 * 1024; // 文本单文件 200KB
 const TOTAL_LIMIT = 500 * 1024; // 文本附件合计 500KB
 const PDF_FILE_LIMIT = 5 * 1024 * 1024; // PDF 文件 ≤5MB
+const DOCX_FILE_LIMIT = 5 * 1024 * 1024; // Word 文件 ≤5MB
+const DOCX_TEXT_LIMIT = 100_000; // Word 提取文字 ≤10 万字
 const PDF_TEXT_LIMIT = 100_000; // PDF 提取文字 ≤10 万字
 const ACCEPT =
-  ".txt,.md,.markdown,.csv,.json,.log,.xml,.yaml,.yml,.html,.htm,.css,.js,.mjs,.cjs,.ts,.tsx,.jsx,.py,.java,.go,.rs,.c,.h,.cpp,.cc,.sql,.sh,.bash,.ini,.conf,.toml,.env,.vue,.php,.rb,.swift,.kt,.pdf,text/*,application/json,application/pdf";
+  ".txt,.md,.markdown,.csv,.json,.log,.xml,.yaml,.yml,.html,.htm,.css,.js,.mjs,.cjs,.ts,.tsx,.jsx,.py,.java,.go,.rs,.c,.h,.cpp,.cc,.sql,.sh,.bash,.ini,.conf,.toml,.env,.vue,.php,.rb,.swift,.kt,.pdf,.docx,text/*,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const TEXT_EXT = [
   "txt","md","markdown","csv","json","log","xml","yaml","yml","html","htm","css",
   "js","mjs","cjs","ts","tsx","jsx","py","java","go","rs","c","h","cpp","cc","sql",
@@ -108,8 +111,44 @@ export function ChatInput() {
       for (const f of files) {
         const ext = f.name.split(".").pop()?.toLowerCase() ?? "";
         const isPdf = ext === "pdf" || f.type === "application/pdf";
+        const isDocx =
+          ext === "docx" ||
+          f.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        const isLegacyDoc = ext === "doc";
         const isText =
           TEXT_EXT.includes(ext) || f.type.startsWith("text/") || f.type === "application/json";
+
+        // ---------- Word 分支：mammoth 本地提取文字 ----------
+        if (isDocx || isLegacyDoc) {
+          if (isLegacyDoc) {
+            toast(`「${f.name}」是旧版 .doc 格式，请先在 Word 里另存为 .docx 再上传`, "#F5C542");
+            continue;
+          }
+          if (f.size > DOCX_FILE_LIMIT) {
+            toast(`「${f.name}」超过 5MB 上限`, "#FF5C5C");
+            continue;
+          }
+          setParsing(f.name);
+          try {
+            const { text: docxText } = await extractDocxText(f, DOCX_TEXT_LIMIT);
+            if (docxText.trim().length < 10) {
+              toast(`「${f.name}」未提取到文字，可能是纯图片文档`, "#F5C542");
+            } else {
+              added.push({
+                name: f.name,
+                size: f.size,
+                content: docxText,
+                meta: "Word 文档",
+              });
+            }
+          } catch {
+            toast(`「${f.name}」Word 解析失败（文件可能已损坏）`, "#FF5C5C");
+          } finally {
+            setParsing(null);
+          }
+          continue;
+        }
+
 
         // ---------- PDF 分支：pdf.js 本地提取文字 ----------
         if (isPdf) {
@@ -140,7 +179,7 @@ export function ChatInput() {
 
         // ---------- 文本文件分支 ----------
         if (!isText) {
-          toast(`「${f.name}」类型暂不支持（图片/Word/Excel 留待后续版本）`, "#F5C542");
+          toast(`「${f.name}」类型暂不支持（图片/Excel 留待后续版本）`, "#F5C542");
           continue;
         }
         if (f.size > SINGLE_LIMIT) {
@@ -563,7 +602,7 @@ export function ChatInput() {
         />
         <button
           onClick={() => fileRef.current?.click()}
-          title="上传附件：PDF（≤5MB，自动提取文字）或文本文件（txt/md/csv/json/代码等，≤200KB），也可直接拖入"
+          title="上传附件：PDF / Word（.docx，≤5MB，自动提取文字）或文本文件（txt/md/csv/json/代码等，≤200KB），也可直接拖入"
           className="text-text-muted hover:text-text-primary transition shrink-0 mb-1.5"
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
