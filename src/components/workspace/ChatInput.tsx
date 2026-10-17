@@ -220,8 +220,15 @@ export function ChatInput() {
 
   async function handleSend() {
     const t = text.trim();
-    if ((!t && attachments.length === 0) || !currentSessionId || parsing) return;
+    if ((!t && attachments.length === 0) || parsing) return;
     if (typing || comparing) return;
+
+    // 0. 当前会话不存在（如左侧历史记录被全部删除）时自动新建，避免静默失败
+    let sessionId = currentSessionId;
+    if (!sessionId || !useFlowHub.getState().sessions.some((x) => x.id === sessionId)) {
+      sessionId = useFlowHub.getState().newSession(currentModel, "新会话", "");
+      toast("已自动创建新会话", "#2EA7FF");
+    }
 
     // 1. / 触发调度任务（附件不参与调度）
     if (t.startsWith("/")) {
@@ -234,8 +241,8 @@ export function ChatInput() {
 
     // 合成最终发送内容（文本 + 附件）
     const composed = composeWithAttachments(t, attachments);
-    const history = messages;
-    pushUserMessage(currentSessionId, composed);
+    const history = sessionId === currentSessionId ? messages : [];
+    pushUserMessage(sessionId, composed);
     setText("");
     setAttachments([]);
 
@@ -245,7 +252,7 @@ export function ChatInput() {
         (m) => (apiKeys[m as keyof typeof apiKeys] ?? "").length > 0
       );
       if (models.length === 0) {
-        pushAiMessage(currentSessionId, {
+        pushAiMessage(sessionId, {
           role: "ai",
           model: "kimi",
           color: AI_MODELS.kimi.color,
@@ -308,7 +315,7 @@ export function ChatInput() {
         ms: Math.round(performance.now() - (startedAt[m] ?? performance.now())),
         error: errs[m],
       }));
-      pushAiMessage(currentSessionId, {
+      pushAiMessage(sessionId, {
         role: "ai",
         time: nowHHMM(),
         content: "",
@@ -347,7 +354,7 @@ export function ChatInput() {
         meta = AI_MODELS[alt];
         toast(`「${prevName}」未配置 key，已自动切换到 ${meta.name}`, meta.color);
       } else {
-        pushAiMessage(currentSessionId, {
+        pushAiMessage(sessionId, {
           role: "ai",
           model,
           color: meta.color,
@@ -378,7 +385,7 @@ export function ChatInput() {
         onDone: (full) => {
           setTyping(null);
           const text2 = full || acc;
-          pushAiMessage(currentSessionId, {
+          pushAiMessage(sessionId, {
             role: "ai",
             model,
             color: meta.color,
@@ -389,7 +396,7 @@ export function ChatInput() {
         },
         onError: (err) => {
           setTyping(null);
-          pushAiMessage(currentSessionId, {
+          pushAiMessage(sessionId, {
             role: "ai",
             model,
             color: meta.color,
