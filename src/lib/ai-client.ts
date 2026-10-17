@@ -11,9 +11,15 @@ import { AI_MODELS } from "./ai-meta";
  * - 返回流式 SSE，前端逐字渲染
  */
 
+/** OpenAI 兼容的多模态内容分片（截图走 image_url dataURL） */
+export type ChatContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+export type ChatContent = string | ChatContentPart[];
+
 export interface ChatRequest {
   provider: ModelId;
-  messages: { role: "system" | "user" | "assistant"; content: string }[];
+  messages: { role: "system" | "user" | "assistant"; content: ChatContent }[];
   apiKey?: string; // 个人 MVP：从 localStorage 带过来，Route Handler 优先用 env
   systemHint?: string;
   signal?: AbortSignal; // 外部取消用
@@ -128,11 +134,16 @@ export async function streamChat(
 
 export interface QuickChatRequest {
   provider: ModelId;
-  messages: { role: "system" | "user" | "assistant"; content: string }[];
+  messages: { role: "system" | "user" | "assistant"; content: ChatContent }[];
   apiKey?: string;
   systemHint?: string;
   /** true 时要求模型输出 JSON（DeepSeek JSON mode；Kimi 走 prompt 约束） */
   json?: boolean;
+  /** 输出上限（token），用于控制策划/质检这类短调用成本 */
+  maxTokens?: number;
+  /** 超时（毫秒），默认 45s */
+  timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 /**
@@ -143,6 +154,13 @@ export async function quickChat(
   req: QuickChatRequest
 ): Promise<{ ok: true; content: string } | { ok: false; error: string }> {
   const meta = AI_MODELS[req.provider];
+  const controller = new AbortController();
+  const onExternalAbort = () => controller.abort();
+  if (req.signal) {
+    if (req.signal.aborted) controller.abort();
+    else req.signal.addEventListener("abort", onExternalAbort);
+  }
+  const timer = setTimeout(() => controller.abort(), req.timeoutMs ?? 45_000);
   try {
     const res = await fetch(`/api/chat/${req.provider}`, {
       method: "POST",
@@ -153,8 +171,10 @@ export async function quickChat(
         systemHint: req.systemHint,
         model: meta.model,
         stream: false,
+        maxTokens: req.maxTokens,
         ...(req.json ? { responseFormat: "json" } : {}),
       }),
+      signal: controller.signal,
     });
     const data = (await res.json().catch(() => null)) as
       | { choices?: { message?: { content?: string } }[]; error?: string }
@@ -169,10 +189,19 @@ export async function quickChat(
     if (!content) return { ok: false, error: "模型返回为空" };
     return { ok: true, content };
   } catch (e: unknown) {
+    if (controller.signal.aborted) {
+      return {
+        ok: false,
+        error: req.signal?.aborted ? "已取消" : "调用超时或已取消，请重试",
+      };
+    }
     return {
       ok: false,
       error: e instanceof Error ? e.message : String(e),
     };
+  } finally {
+    clearTimeout(timer);
+    if (req.signal) req.signal.removeEventListener("abort", onExternalAbort);
   }
 }
 
@@ -205,7 +234,7 @@ export function buildHistoryForModel(
   history: ChatMessage[],
   model: ModelId,
   systemHint?: string
-): { role: "system" | "user" | "assistant"; content: string }[] {
+): { role: "system" | "user" | "assistant"; content: ChatContent }[] {
   const out: { role: "system" | "user" | "assistant"; content: string }[] = [];
   if (systemHint) {
     out.push({ role: "system", content: systemHint });

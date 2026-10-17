@@ -6,6 +6,7 @@ import { AI_MODELS } from "@/lib/ai-meta";
 import { ContextBudget } from "./ContextBudget";
 import { ModelSwitch } from "./ModelSwitch";
 import { CompareCard, CompareIntro } from "./CompareCard";
+import { CollabTimeline } from "./CollabTimeline";
 import { GhostButton } from "@/components/ui";
 import type { ChatMessage, ModelId } from "@/lib/types";
 
@@ -88,6 +89,23 @@ export function MessageList() {
                   style={{ background: "rgba(255,255,255,0.08)" }}
                 >
                   <UserBubbleContent content={m.content} />
+                  {m.images && m.images.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 justify-end mt-1.5">
+                      {m.images.map((src, i) => (
+                        <img
+                          key={i}
+                          src={src}
+                          alt="截图"
+                          className="rounded-lg object-cover"
+                          style={{
+                            maxWidth: 240,
+                            maxHeight: 180,
+                            border: "1px solid rgba(255,255,255,0.12)",
+                          }}
+                        />
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             );
@@ -115,7 +133,19 @@ export function MessageList() {
               </div>
             );
           }
-          // 多 AI 协同轮：串行渲染协作链
+          // 接力协同轮：策划 → 确认 → 执行 → 质检
+          if (m.collabRun) {
+            return (
+              <div key={m.id} className="mb-5 animate-fade-up">
+                <CollabTimeline
+                  sessionId={currentSessionId}
+                  messageId={m.id}
+                  run={m.collabRun}
+                />
+              </div>
+            );
+          }
+          // 多 AI 协同轮（旧版两步接力）：串行渲染协作链
           if (m.collab && m.collab.length > 0) {
             return (
               <div key={m.id} className="mb-5 animate-fade-up">
@@ -199,9 +229,12 @@ const FILE_BLOCK_RE =
   /【附件：(.+?)（([\d.]+) KB）】\n<<<FILE:[\s\S]*?>>>\n([\s\S]*?)\n<<<END FILE>>>/g;
 
 function UserBubbleContent({ content }: { content: string }) {
-  if (!content.includes("<<<FILE:")) {
-    return <span className="whitespace-pre-line">{content}</span>;
+  // 图片以缩略图渲染（m.images），正文里的【图片：xx】占位标记不显示
+  const clean = content.replace(/【图片：.+?】\n?/g, "").trimEnd();
+  if (!clean.includes("<<<FILE:")) {
+    return <span className="whitespace-pre-line">{clean}</span>;
   }
+  content = clean;
   const parts: ReactNode[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -256,14 +289,15 @@ function esc(s: string): string {
     .replace(/>/g, "&gt;");
 }
 
-/** 清理用户消息中的附件块，导出时只保留文件名 */
+/** 清理用户消息中的附件块，导出时只保留文件名；图片占位标记删除（图片本体单独渲染） */
 function stripAttachments(content: string): string {
   return content
     .replace(
       /【附件：(.+?)（[\d.]+ KB）】\n<<<FILE:[\s\S]*?>>>\n[\s\S]*?\n<<<END FILE>>>/g,
       "【附件：$1】"
     )
-    .replace(/<<<FILE:[\s\S]*?<<<END FILE>>>/g, "【附件内容省略】");
+    .replace(/<<<FILE:[\s\S]*?<<<END FILE>>>/g, "【附件内容省略】")
+    .replace(/【图片：.+?】\n?/g, "");
 }
 
 interface ExportSection {
@@ -277,9 +311,41 @@ function renderMessages(messages: ChatMessage[]): string {
   const parts: string[] = [];
   for (const m of messages) {
     if (m.role === "user") {
+      const imgs = (m.images ?? [])
+        .map((src) => `<img class="msg-img" src="${src}">`)
+        .join("");
       parts.push(
-        `<div class="msg-user"><div class="bubble-user">${esc(stripAttachments(m.content))}</div></div>`
+        `<div class="msg-user"><div class="bubble-user">${esc(
+          stripAttachments(m.content)
+        )}</div>${imgs}</div>`
       );
+      continue;
+    }
+    if (m.collabRun) {
+      const r = m.collabRun;
+      parts.push(
+        `<div class="msg-ai"><div class="ai-head"><span class="dot" style="background:#9381FF"></span><span style="color:#9381FF">${esc(
+          `AI 接力 · ${AI_MODELS[r.planner].name} 策划 → ${AI_MODELS[r.executor].name} 执行`
+        )}</span></div>`
+      );
+      for (const st of r.steps) {
+        const sColor = st.error ? "#999" : AI_MODELS[st.model]?.color ?? "#999";
+        parts.push(
+          `<div class="msg-ai" style="margin:8px 0 8px 14px"><div class="ai-head"><span class="dot" style="background:${sColor}"></span><span style="color:${sColor}">${esc(
+            `${AI_MODELS[st.model]?.name ?? st.model} · ${st.stage}`
+          )}</span></div><div class="ai-body">${esc(
+            st.error ? `执行失败：${st.error}` : st.content
+          )}</div></div>`
+        );
+      }
+      if (r.brief) {
+        parts.push(
+          `<div class="ai-body" style="margin:8px 0 8px 14px;color:#666;white-space:pre-wrap">【交接单】\n${esc(
+            r.brief.raw
+          )}</div>`
+        );
+      }
+      parts.push(`</div>`);
       continue;
     }
     if (m.collab && m.collab.length > 0) {
@@ -343,6 +409,7 @@ body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;backgroun
 .page-break{page-break-before:always}
 .msg-user{display:flex;justify-content:flex-end;margin:16px 0}
 .bubble-user{background:#f0f0f3;border-radius:12px;padding:10px 16px;max-width:72%;font-size:14px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+.msg-img{display:block;max-width:320px;max-height:240px;border-radius:8px;margin:8px 0 0 auto}
 .msg-ai{margin:16px 0}
 .ai-head{display:flex;align-items:center;gap:6px;margin-bottom:6px}
 .ai-head .dot{width:8px;height:8px;border-radius:50%;display:inline-block}

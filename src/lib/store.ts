@@ -5,6 +5,7 @@ import { persist } from "zustand/middleware";
 import type {
   ApiKeys,
   ChatMessage,
+  CollabBrief,
   DispatchMode,
   DispatchPrefs,
   DispatchTask,
@@ -230,6 +231,8 @@ interface FlowHubState {
   currentModel: ModelId;
   dispatchMode: DispatchMode;
   dispatchTask: DispatchTask | null;
+  /** 会话级固定交接单：接力完成后，后续追问继续由执行模型承接 */
+  sessionBrief: Record<string, { brief: CollabBrief; executor: ModelId }>;
 
   // ---------- Actions ----------
   setPage: (p: PageId) => void;
@@ -245,14 +248,17 @@ interface FlowHubState {
   handoffSession: (id: string, summary: string) => string;
 
   setModel: (m: ModelId) => void;
-  pushUserMessage: (sessionId: string, text: string) => void;
-  pushAiMessage: (sessionId: string, msg: Omit<ChatMessage, "id">) => void;
+  pushUserMessage: (sessionId: string, text: string, images?: string[]) => void;
+  pushAiMessage: (sessionId: string, msg: Omit<ChatMessage, "id">) => string;
   patchMessage: (
     sessionId: string,
     messageId: string,
     patch: Partial<ChatMessage>
   ) => void;
   routeFor: (text: string) => { model: ModelId; reason: string };
+
+  setSessionBrief: (sessionId: string, brief: CollabBrief, executor: ModelId) => void;
+  clearSessionBrief: (sessionId: string) => void;
 
   addMemory: (m: Omit<Memory, "id" | "createdAt">) => void;
   addMemories: (ms: Omit<Memory, "id" | "createdAt">[]) => void;
@@ -306,6 +312,7 @@ export const useFlowHub = create<FlowHubState>()(
       dispatchMode: "auto",
       // 调度任务只存在于内存：执行中有真实流式连接，刷新后僵尸状态无意义
       dispatchTask: null,
+      sessionBrief: {},
 
       setPage: (p) => set({ currentPage: p }),
       setWorkspaceView: (v) => set({ workspaceView: v }),
@@ -405,11 +412,12 @@ export const useFlowHub = create<FlowHubState>()(
 
       setModel: (m) => set({ currentModel: m }),
 
-      pushUserMessage: (sessionId, text) => {
+      pushUserMessage: (sessionId, text, images) => {
         const msg: ChatMessage = {
           id: uid("m"),
           role: "user",
           content: text,
+          ...(images && images.length > 0 ? { images } : {}),
           time: nowHHMM(),
           tokens: estimateTokens(text),
         };
@@ -432,6 +440,7 @@ export const useFlowHub = create<FlowHubState>()(
             [sessionId]: [...(s.messages[sessionId] ?? []), full],
           },
         }));
+        return full.id;
       },
 
       patchMessage: (sessionId, messageId, patch) =>
@@ -450,6 +459,18 @@ export const useFlowHub = create<FlowHubState>()(
         }
         return autoRoute(text);
       },
+
+      setSessionBrief: (sessionId, brief, executor) =>
+        set((s) => ({
+          sessionBrief: { ...s.sessionBrief, [sessionId]: { brief, executor } },
+        })),
+
+      clearSessionBrief: (sessionId) =>
+        set((s) => {
+          const next = { ...s.sessionBrief };
+          delete next[sessionId];
+          return { sessionBrief: next };
+        }),
 
       addMemory: (m) =>
         set((s) => ({
@@ -608,6 +629,7 @@ export const useFlowHub = create<FlowHubState>()(
         currentSessionId: s.currentSessionId,
         currentModel: s.currentModel,
         dispatchMode: s.dispatchMode,
+        sessionBrief: s.sessionBrief,
       }),
       version: 1,
       // v0 → v1：旧版本（≤2026-09）种子记忆没有 source 字段，

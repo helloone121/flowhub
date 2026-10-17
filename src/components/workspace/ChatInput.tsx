@@ -4,22 +4,26 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useFlowHub } from "@/lib/store";
 import { AI_MODELS } from "@/lib/ai-meta";
 import { autoRoute } from "@/lib/routing";
-import { streamChat, buildHistoryForModel } from "@/lib/ai-client";
+import { streamChat, buildHistoryForModel, type ChatContent } from "@/lib/ai-client";
+import { makeStep, planBrief } from "@/lib/collab-ai";
+import { PLANNER_USER } from "@/lib/prompts";
 import { extractPdfText } from "@/lib/pdf";
 import { extractDocxText } from "@/lib/docx";
 import { pickHelper, extractMemories, buildMemoryContext } from "@/lib/memory-ai";
-import type { CompareColumn, CollabStep, ModelId } from "@/lib/types";
+import type { CompareColumn, CollabRun, ModelId } from "@/lib/types";
 import { toast } from "@/components/ui";
 import { useNewTaskModal } from "@/components/modals";
 
 /** 可参与真实对比/调度的模型（排除 mock） */
 const REAL_MODELS: ModelId[] = ["kimi", "deepseek"];
 
-/** 附件：文本类文件直接读取；PDF 经 pdf.js 提取文字 */
+/** 附件：文本类文件直接读取；PDF/Word 提取文字；图片压缩后以 dataURL 随消息发送 */
 interface Attachment {
   name: string;
   size: number;
   content: string;
+  /** 图片附件的压缩 dataURL（存在时表示图片附件） */
+  dataUrl?: string;
   /** 附加展示信息，如 "PDF · 12 页" */
   meta?: string;
 }
@@ -30,13 +34,38 @@ const PDF_FILE_LIMIT = 5 * 1024 * 1024; // PDF 文件 ≤5MB
 const DOCX_FILE_LIMIT = 5 * 1024 * 1024; // Word 文件 ≤5MB
 const DOCX_TEXT_LIMIT = 100_000; // Word 提取文字 ≤10 万字
 const PDF_TEXT_LIMIT = 100_000; // PDF 提取文字 ≤10 万字
+const IMAGE_FILE_LIMIT = 8 * 1024 * 1024; // 图片原图 ≤8MB（压缩后远小于此）
+const IMAGE_MAX_COUNT = 4; // 每条消息最多 4 张图片
+const IMAGE_MAX_WIDTH = 1280; // 截图/图片最长边压到 1280px
+const IMAGE_QUALITY = 0.72; // JPEG 压缩质量
 const ACCEPT =
-  ".txt,.md,.markdown,.csv,.json,.log,.xml,.yaml,.yml,.html,.htm,.css,.js,.mjs,.cjs,.ts,.tsx,.jsx,.py,.java,.go,.rs,.c,.h,.cpp,.cc,.sql,.sh,.bash,.ini,.conf,.toml,.env,.vue,.php,.rb,.swift,.kt,.pdf,.docx,text/*,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  ".txt,.md,.markdown,.csv,.json,.log,.xml,.yaml,.yml,.html,.htm,.css,.js,.mjs,.cjs,.ts,.tsx,.jsx,.py,.java,.go,.rs,.c,.h,.cpp,.cc,.sql,.sh,.bash,.ini,.conf,.toml,.env,.vue,.php,.rb,.swift,.kt,.pdf,.docx,.png,.jpg,.jpeg,.webp,text/*,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/png,image/jpeg,image/webp";
 const TEXT_EXT = [
   "txt","md","markdown","csv","json","log","xml","yaml","yml","html","htm","css",
   "js","mjs","cjs","ts","tsx","jsx","py","java","go","rs","c","h","cpp","cc","sql",
   "sh","bash","ini","conf","toml","env","vue","php","rb","swift","kt",
 ];
+
+/** 图片压缩为 dataURL：最长边 1280、JPEG 0.72（截图识别足够，且控制 localStorage 体积） */
+async function imageToDataUrl(file: Blob): Promise<string> {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = () => reject(new Error("image decode failed"));
+      i.src = url;
+    });
+    const scale = Math.min(1, IMAGE_MAX_WIDTH / Math.max(img.width, img.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(img.width * scale));
+    canvas.height = Math.max(1, Math.round(img.height * scale));
+    canvas.getContext("2d")!.drawImage(img, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", IMAGE_QUALITY);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
 
 export function ChatInput() {
   const [text, setText] = useState("");
@@ -44,10 +73,15 @@ export function ChatInput() {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [parsing, setParsing] = useState<string | null>(null);
-  // 单聊 / 多模型对比 / AI 协同
-  const [mode, setMode] = useState<"single" | "compare" | "collab">("single");
+  // 单聊 / 多模型对比 / 接力协同
+  const [mode, setMode] = useState<"single" | "compare" | "relay">("single");
   const [compareModels, setCompareModels] = useState<ModelId[]>(["kimi", "deepseek"]);
   const [comparing, setComparing] = useState<CompareColumn[] | null>(null);
+  // 接力协同：策划（便宜）→ 交接单 → 执行（长文）
+  const [relayPlanner, setRelayPlanner] = useState<ModelId>("deepseek");
+  const [relayExecutor, setRelayExecutor] = useState<ModelId>("kimi");
+  const [deepReview, setDeepReview] = useState(false);
+  const [planning, setPlanning] = useState<{ model: ModelId } | null>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   // 当前生成任务的取消控制器（单聊/对比/协同共用）
@@ -67,6 +101,11 @@ export function ChatInput() {
   const setModel = useFlowHub((s) => s.setModel);
   const memories = useFlowHub((s) => s.memories);
   const addMemories = useFlowHub((s) => s.addMemories);
+  // 当前会话固定交接单：接力完成后，后续追问继续由执行模型承接
+  const pinnedBrief = useFlowHub((s) =>
+    s.currentSessionId ? s.sessionBrief[s.currentSessionId] : undefined
+  );
+  const clearSessionBrief = useFlowHub((s) => s.clearSessionBrief);
 
   const BASE_HINT =
     "你是 FlowHub 调度中枢的 AI 协作者。用户偏好：中文回复、结构化输出、简洁排版、优先用数据说话。";
@@ -179,9 +218,34 @@ export function ChatInput() {
           continue;
         }
 
+        // ---------- 图片分支：本地压缩为 dataURL，随消息以多模态分片发送 ----------
+        const isImage =
+          f.type.startsWith("image/") || ["png", "jpg", "jpeg", "webp", "gif"].includes(ext);
+        if (isImage) {
+          if (f.size > IMAGE_FILE_LIMIT) {
+            toast(`「${f.name}」图片超过 8MB 上限`, "#FF5C5C");
+            continue;
+          }
+          const imgCount = [...attachments, ...added].filter((a) => a.dataUrl).length;
+          if (imgCount >= IMAGE_MAX_COUNT) {
+            toast(`每次最多发送 ${IMAGE_MAX_COUNT} 张图片`, "#F5C542");
+            continue;
+          }
+          setParsing(f.name);
+          try {
+            const dataUrl = await imageToDataUrl(f);
+            added.push({ name: f.name, size: f.size, content: "", dataUrl, meta: "图片" });
+          } catch {
+            toast(`「${f.name}」图片处理失败`, "#FF5C5C");
+          } finally {
+            setParsing(null);
+          }
+          continue;
+        }
+
         // ---------- 文本文件分支 ----------
         if (!isText) {
-          toast(`「${f.name}」类型暂不支持（图片/Excel 留待后续版本）`, "#F5C542");
+          toast(`「${f.name}」类型暂不支持（Excel 留待后续版本）`, "#F5C542");
           continue;
         }
         if (f.size > SINGLE_LIMIT) {
@@ -203,15 +267,69 @@ export function ChatInput() {
     [attachments]
   );
 
-  /** 把附件拼进发送文本，用明确分隔符包裹便于 AI 识别 */
+  /** 截图：调起系统屏幕/窗口/标签页选择器，抓帧后作为图片附件加入输入框 */
+  const captureScreenshot = useCallback(async () => {
+    if (attachments.filter((a) => a.dataUrl).length >= IMAGE_MAX_COUNT) {
+      toast(`每次最多发送 ${IMAGE_MAX_COUNT} 张图片`, "#F5C542");
+      return;
+    }
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      toast("当前环境不支持直接截图：可用 Win+Shift+S 截图后按 Ctrl+V 粘贴到输入框", "#F5C542");
+      return;
+    }
+    let stream: MediaStream | null = null;
+    try {
+      stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      const video = document.createElement("video");
+      video.srcObject = stream;
+      video.muted = true;
+      await video.play();
+      await new Promise((r) => setTimeout(r, 350)); // 等首帧渲染稳定
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext("2d")!.drawImage(video, 0, 0);
+      stream.getTracks().forEach((t) => t.stop());
+      const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, "image/png"));
+      if (!blob) throw new Error("empty frame");
+      const dataUrl = await imageToDataUrl(blob);
+      const d = new Date();
+      const name = `截图-${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}${String(d.getSeconds()).padStart(2, "0")}.png`;
+      setAttachments((prev) => [
+        ...prev,
+        {
+          name,
+          size: Math.round((dataUrl.length * 3) / 4),
+          content: "",
+          dataUrl,
+          meta: "屏幕截图",
+        },
+      ]);
+      toast("截图已添加，补充说明后发送即可", "#2EA7FF");
+    } catch {
+      stream?.getTracks().forEach((t) => t.stop());
+      toast("已取消截图", "#71717F");
+    }
+  }, [attachments]);
+
+  /** 把附件拼进发送文本；图片以【图片：xx】标记占位（真实图片走多模态分片） */
   const composeWithAttachments = (t: string, atts: Attachment[]) => {
-    if (atts.length === 0) return t;
-    const blocks = atts.map(
+    const textAtts = atts.filter((a) => !a.dataUrl);
+    const imgAtts = atts.filter((a) => a.dataUrl);
+    const imgLines = imgAtts.length
+      ? "\n" + imgAtts.map((a) => `【图片：${a.name}】`).join("\n")
+      : "";
+    if (textAtts.length === 0) {
+      if (imgAtts.length === 0) return t;
+      const intro = t.trim() || "请查看我发送的截图，说明其中的关键内容并指出需要注意的问题。";
+      return `${intro}${imgLines}`;
+    }
+    const blocks = textAtts.map(
       (a) =>
         `【附件：${a.name}（${(a.size / 1024).toFixed(1)} KB）】\n<<<FILE:${a.name}>>>\n${a.content}\n<<<END FILE>>>`
     );
     const intro = t.trim() || "请阅读以下附件内容，总结关键要点并指出需要注意的问题。";
-    return `${intro}\n\n${blocks.join("\n\n")}`;
+    return `${intro}${imgLines}\n\n${blocks.join("\n\n")}`;
   };
 
   /** 拼接带记忆的 systemHint */
@@ -223,7 +341,7 @@ export function ChatInput() {
   async function handleSend() {
     const t = text.trim();
     if ((!t && attachments.length === 0) || parsing) return;
-    if (typing || comparing) return;
+    if (typing || comparing || planning) return;
 
     // 0. 当前会话不存在（如左侧历史记录被全部删除）时自动新建，避免静默失败
     let sessionId = currentSessionId;
@@ -244,116 +362,107 @@ export function ChatInput() {
     // 合成最终发送内容（文本 + 附件）
     const composed = composeWithAttachments(t, attachments);
     const history = sessionId === currentSessionId ? messages : [];
-    pushUserMessage(sessionId, composed);
+    // 图片附件以多模态分片随最后一条 user 消息发送，同时存入消息记录
+    const imageUrls = attachments
+      .filter((a) => a.dataUrl)
+      .map((a) => a.dataUrl!)
+      .slice(0, IMAGE_MAX_COUNT);
+    const withImages = (content: string): ChatContent =>
+      imageUrls.length === 0
+        ? content
+        : [
+            { type: "text", text: content },
+            ...imageUrls.map((u) => ({
+              type: "image_url" as const,
+              image_url: { url: u },
+            })),
+          ];
+    pushUserMessage(sessionId, composed, imageUrls.length > 0 ? imageUrls : undefined);
     setText("");
     setAttachments([]);
 
-    // ---------- 协同模式：A 初答 → B 纠错优化（接力协作，非并排对比） ----------
-    if (mode === "collab") {
-      const pool = REAL_MODELS.filter(
+    // ---------- 接力模式：DeepSeek 策划交接单 → 人工确认 → Kimi 执行 ----------
+    if (mode === "relay") {
+      const available = REAL_MODELS.filter(
         (m) => (apiKeys[m as keyof typeof apiKeys] ?? "").length > 0
       );
-      if (pool.length === 0) {
+      if (available.length === 0) {
         pushAiMessage(sessionId, {
           role: "ai",
           model: "kimi",
           color: AI_MODELS.kimi.color,
           time: nowHHMM(),
-          content: "协同模式至少需要一个已配置的 API key（Kimi 或 DeepSeek）。请在「设置」页填入后重试。",
+          content:
+            "接力模式至少需要一个已配置的 API key（Kimi 或 DeepSeek）。请在「设置」页填入后重试。",
         });
         return;
       }
-      // 首答优先用当前选中的真实模型，否则回退 Kimi
+
+      // 按实际可用的 key 调整策划/执行，避免选中的模型没配 key 时静默失败
+      let planner = available.includes(relayPlanner) ? relayPlanner : available[0];
+      let executor = available.includes(relayExecutor) ? relayExecutor : available[0];
+      if (planner === executor && available.length > 1) {
+        executor = available.find((m) => m !== planner) ?? planner;
+      }
+      if (planner !== relayPlanner || executor !== relayExecutor) {
+        toast(
+          `已按可用 key 调整接力：${AI_MODELS[planner].name} 策划 → ${AI_MODELS[executor].name} 执行`,
+          "#F5C542"
+        );
+      } else if (planner === executor) {
+        toast(
+          "当前只配置了一个 key，将单模型自接力（建议补充 DeepSeek key 以启用双模型协作）",
+          "#F5C542"
+        );
+      }
+
       abortRef.current = new AbortController();
-      const first: "kimi" | "deepseek" = pool.includes(currentModel as "kimi" | "deepseek")
-        ? (currentModel as "kimi" | "deepseek")
-        : (pool[0] as "kimi" | "deepseek");
-      // 只配置了一个 key 时，由同一模型自我复核
-      const second = (pool.find((m) => m !== first) ?? first) as "kimi" | "deepseek";
-      const solo = second === first;
+      setPlanning({ model: planner });
+      const started = performance.now();
+      const r = await planBrief({
+        userText: composed,
+        model: planner,
+        apiKey: apiKeys[planner as keyof typeof apiKeys] ?? "",
+        signal: abortRef.current.signal,
+      });
+      abortRef.current = null;
+      setPlanning(null);
 
-      const runStep = (m: "kimi" | "deepseek", userContent: string, systemHint: string) =>
-        new Promise<CollabStep>((resolve) => {
-          const color = AI_MODELS[m].color;
-          let acc = "";
-          const t0 = performance.now();
-          setTyping({ model: m, color, content: "" });
-          const msgs = buildHistoryForModel(history, m, systemHint);
-          msgs.push({ role: "user", content: userContent });
-          streamChat(
-            {
-              provider: m,
-              apiKey: apiKeys[m as keyof typeof apiKeys] ?? "",
-              messages: msgs,
-              signal: abortRef.current?.signal,
-            },
-            {
-              onToken: (delta) => {
-                acc += delta;
-                setTyping({ model: m, color, content: acc });
-              },
-              onDone: (full) =>
-                resolve({
-                  model: m,
-                  stage: "",
-                  content: full || acc,
-                  ms: Math.round(performance.now() - t0),
-                }),
-              onError: (err) =>
-                resolve({
-                  model: m,
-                  stage: "",
-                  content: acc,
-                  ms: Math.round(performance.now() - t0),
-                  error: err,
-                }),
-            }
-          );
-        });
-
-      // 第 1 步：初答
-      const step1 = await runStep(first, composed, hintWithMemory(composed));
-      if (step1.error && !step1.content) {
+      if (!r.ok || !r.brief) {
         pushAiMessage(sessionId, {
           role: "ai",
-          model: first,
-          color: AI_MODELS[first].color,
+          model: planner,
+          color: AI_MODELS[planner].color,
           time: nowHHMM(),
-          content: `调用失败：${step1.error}`,
+          content: `策划失败：${r.error ?? "模型未返回可用的交接单"}`,
         });
         return;
       }
 
-      // 第 2 步：协作者基于初稿纠错优化（单 key 时为自我复核）
-      const memCtx2 = buildMemoryContext(memories, composed);
-      const stage2 = solo ? "复核优化" : "协同优化";
-      const sys2 = `${BASE_HINT}\n\n你处于多 AI 协同模式：${
-        solo ? "你自己的初稿" : `另一位 AI（${AI_MODELS[first].name}）`
-      }已给出初稿。请先用 1-2 句指出初稿的问题或遗漏，再给出你修正与补充后的完整最终答案；不要原样复述初稿。${
-        memCtx2 ? `\n\n${memCtx2}` : ""
-      }`;
-      const step2 = await runStep(
-        second,
-        `${t}\n\n【协作者初稿】\n${step1.content}`,
-        sys2
-      );
-
-      const steps: CollabStep[] = [
-        { ...step1, stage: "初答" },
-        { ...step2, stage: stage2 },
-      ];
+      const planStep = makeStep({
+        model: planner,
+        stage: "策划",
+        content: r.brief.raw,
+        input: PLANNER_USER(composed),
+        ms: Math.round(performance.now() - started),
+      });
+      const run: CollabRun = {
+        id: `run_${Date.now().toString(36)}`,
+        planner,
+        executor,
+        deepReview,
+        phase: "awaiting_confirm",
+        sourceText: composed,
+        brief: r.brief,
+        steps: [planStep],
+        createdAt: Date.now(),
+      };
       pushAiMessage(sessionId, {
         role: "ai",
         time: nowHHMM(),
         content: "",
-        collab: steps,
+        collabRun: run,
       });
-
-      // 取最优一步抽记忆
-      const best = [...steps]
-        .filter((s) => !s.error && s.content)
-        .sort((a, b) => b.content.length - a.content.length)[0];
-      if (best) void maybeExtractMemories(composed, best.content);
       return;
     }
 
@@ -388,7 +497,7 @@ export function ChatInput() {
             new Promise<void>((resolve) => {
               startedAt[model] = performance.now();
               const msgs = buildHistoryForModel(history, model, systemHint);
-              msgs.push({ role: "user", content: composed });
+              msgs.push({ role: "user", content: withImages(composed) });
               streamChat(
                 {
                   provider: model,
@@ -445,9 +554,11 @@ export function ChatInput() {
     }
 
     // ---------- 单聊模式 ----------
-    // 2. 自动路由（基于合成内容，带长附件时更容易正确路由到 Kimi）
-    let model = currentModel;
-    if (prefs.autoRoute) {
+    // 2. 有固定交接单时，后续追问继续由执行模型承接；否则走自动路由
+    let model = pinnedBrief ? pinnedBrief.executor : currentModel;
+    if (pinnedBrief) {
+      if (model !== currentModel) setModel(model);
+    } else if (prefs.autoRoute) {
       const r = routeFor(composed);
       if (r.model !== currentModel) {
         setModel(r.model);
@@ -478,12 +589,15 @@ export function ChatInput() {
       }
     }
 
-    // 4. 流式调用（携带记忆上下文）
+    // 4. 流式调用（携带记忆上下文；有固定交接单时一并前置）
     const ac = new AbortController();
     abortRef.current = ac;
     setTyping({ model, color: meta.color, content: "" });
-    const msgs = buildHistoryForModel(history, model, hintWithMemory(composed));
-    msgs.push({ role: "user", content: composed });
+    const sysHint = pinnedBrief
+      ? `${hintWithMemory(composed)}\n\n【本会话固定交接单】\n${pinnedBrief.brief.raw}`
+      : hintWithMemory(composed);
+    const msgs = buildHistoryForModel(history, model, sysHint);
+    msgs.push({ role: "user", content: withImages(composed) });
 
     let acc = "";
     await streamChat(
@@ -546,8 +660,8 @@ export function ChatInput() {
           {(
             [
               ["single", "单聊"],
-              ["compare", "⚡ 多模型对比"],
-              ["collab", "🤝 AI 协同"],
+              ["compare", "⚡ 对比"],
+              ["relay", "🧭 接力"],
             ] as const
           ).map(([id, label]) => {
             const active = mode === id;
@@ -604,14 +718,116 @@ export function ChatInput() {
             </span>
           </>
         )}
-        {mode === "collab" && (
-          <span className="text-tag text-text-disabled">
-            接力协同：A 初答 → B 纠错优化，合并为一条回复
-          </span>
+        {mode === "relay" && (
+          <>
+            <span className="text-tag text-text-muted">策划</span>
+            {REAL_MODELS.map((m) => {
+              const active = relayPlanner === m;
+              const c = AI_MODELS[m].color;
+              return (
+                <button
+                  key={`p-${m}`}
+                  onClick={() => setRelayPlanner(m)}
+                  title={`${AI_MODELS[m].name} 负责把想法整理成交接单`}
+                  className="inline-flex items-center gap-1 px-2 h-7 rounded-pill text-tag transition"
+                  style={{
+                    background: active ? `${c}22` : "rgba(255,255,255,0.04)",
+                    color: active ? c : "#71717F",
+                    border: `1px solid ${active ? `${c}66` : "rgba(255,255,255,0.08)"}`,
+                  }}
+                >
+                  <span className="rounded-pill" style={{ width: 5, height: 5, background: c }} />
+                  {AI_MODELS[m].name}
+                </button>
+              );
+            })}
+            <span className="text-tag text-text-disabled">→</span>
+            <span className="text-tag text-text-muted">执行</span>
+            {REAL_MODELS.map((m) => {
+              const active = relayExecutor === m;
+              const c = AI_MODELS[m].color;
+              return (
+                <button
+                  key={`e-${m}`}
+                  onClick={() => setRelayExecutor(m)}
+                  title={`${AI_MODELS[m].name} 只读交接单并产出最终结果`}
+                  className="inline-flex items-center gap-1 px-2 h-7 rounded-pill text-tag transition"
+                  style={{
+                    background: active ? `${c}22` : "rgba(255,255,255,0.04)",
+                    color: active ? c : "#71717F",
+                    border: `1px solid ${active ? `${c}66` : "rgba(255,255,255,0.08)"}`,
+                  }}
+                >
+                  <span className="rounded-pill" style={{ width: 5, height: 5, background: c }} />
+                  {AI_MODELS[m].name}
+                </button>
+              );
+            })}
+            <button
+              onClick={() => setDeepReview((v) => !v)}
+              className="px-2 h-7 rounded-pill text-tag transition"
+              style={{
+                background: deepReview ? "rgba(19,221,196,0.12)" : "rgba(255,255,255,0.04)",
+                color: deepReview ? "#13DDC4" : "#71717F",
+                border: `1px solid ${deepReview ? "rgba(19,221,196,0.4)" : "rgba(255,255,255,0.08)"}`,
+              }}
+              title="执行后由策划模型对照验收标准质检，必要时让执行模型修订一次"
+            >
+              深度质检 {deepReview ? "开" : "关"}
+            </button>
+            {!apiKeys.deepseek && (
+              <span className="text-tag" style={{ color: "#F5C542" }}>
+                · 未配 DeepSeek，策划将回退 Kimi（更贵）
+              </span>
+            )}
+          </>
         )}
       </div>
 
-      {routeHint && mode === "single" && (
+      {/* 会话级固定交接单：接力完成后追问仍由执行模型承接 */}
+      {pinnedBrief && (
+        <div
+          className="flex items-center gap-2 px-3 py-1.5 rounded-md mb-2 text-label flex-wrap"
+          style={{
+            background: "rgba(46,167,255,0.06)",
+            border: "1px solid rgba(46,167,255,0.18)",
+          }}
+        >
+          <span className="font-semibold" style={{ color: "#7CC4FF" }}>
+            接力中
+          </span>
+          <span className="text-text-muted">
+            · 执行 {AI_MODELS[pinnedBrief.executor].name}
+          </span>
+          <details className="min-w-0 max-w-full">
+            <summary className="cursor-pointer text-text-muted hover:text-text-primary transition select-none">
+              查看交接单
+            </summary>
+            <pre
+              className="mt-1.5 px-2.5 py-2 rounded-lg text-tag leading-[18px] whitespace-pre-wrap overflow-y-auto"
+              style={{
+                background: "rgba(0,0,0,0.25)",
+                color: "rgba(255,255,255,0.6)",
+                maxHeight: 220,
+              }}
+            >
+              {pinnedBrief.brief.raw}
+            </pre>
+          </details>
+          <div className="flex-1" />
+          <button
+            onClick={() => {
+              clearSessionBrief(currentSessionId);
+              toast("已结束接力，后续按普通会话处理", "#8E8E9C");
+            }}
+            className="text-text-muted hover:text-text-primary transition"
+          >
+            结束接力
+          </button>
+        </div>
+      )}
+
+      {routeHint && mode === "single" && !pinnedBrief && (
         <div
           className="flex items-center gap-2 px-3 py-1.5 rounded-md mb-2 text-label"
           style={{ background: "rgba(255,255,255,0.03)" }}
@@ -699,6 +915,36 @@ export function ChatInput() {
               </button>
             </span>
           ))}
+        </div>
+      )}
+
+      {/* 接力策划中 */}
+      {planning && (
+        <div className="mt-3 mb-2 animate-fade-up">
+          <div className="flex items-center gap-2 mb-2">
+            <span
+              className="rounded-pill"
+              style={{ width: 8, height: 8, background: AI_MODELS[planning.model].color }}
+            />
+            <span
+              className="text-body-sm font-semibold"
+              style={{ color: AI_MODELS[planning.model].color }}
+            >
+              {AI_MODELS[planning.model].name}
+            </span>
+            <span className="text-label text-text-muted">正在梳理成交接单…</span>
+            <button
+              onClick={() => abortRef.current?.abort()}
+              className="ml-auto text-tag text-text-muted hover:text-text-primary transition"
+            >
+              取消
+            </button>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="typing-dot" />
+            <span className="typing-dot" />
+            <span className="typing-dot" />
+          </div>
         </div>
       )}
 
@@ -831,7 +1077,7 @@ export function ChatInput() {
         />
         <button
           onClick={() => fileRef.current?.click()}
-          title="上传附件：PDF / Word（.docx，≤5MB，自动提取文字）或文本文件（txt/md/csv/json/代码等，≤200KB），也可直接拖入"
+          title="上传附件：PDF / Word（.docx，≤5MB，自动提取文字）、图片（≤8MB，自动压缩）或文本文件（≤200KB），也可直接拖入"
           className="text-text-muted hover:text-text-primary transition shrink-0 mb-1.5"
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
@@ -844,10 +1090,39 @@ export function ChatInput() {
             />
           </svg>
         </button>
+        <button
+          onClick={captureScreenshot}
+          title="截取屏幕 / 窗口 / 标签页发给 AI；也可用 Win+Shift+S 截图后 Ctrl+V 直接粘贴"
+          className="text-text-muted hover:text-text-primary transition shrink-0 mb-1.5"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+            <path
+              d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"
+              stroke="currentColor"
+              strokeWidth={1.8}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            <circle cx="12" cy="13" r="4" stroke="currentColor" strokeWidth={1.8} />
+          </svg>
+        </button>
         <textarea
           ref={taRef}
           value={text}
           onChange={(e) => setText(e.target.value)}
+          onPaste={(e) => {
+            // 支持直接 Ctrl+V 粘贴截图（Win+Shift+S 后剪贴板里就是图片）
+            const imgs = Array.from(e.clipboardData?.items ?? []).filter((it) =>
+              it.type.startsWith("image/")
+            );
+            if (imgs.length > 0) {
+              e.preventDefault();
+              const files = imgs
+                .map((it) => it.getAsFile())
+                .filter((f): f is File => f != null);
+              if (files.length > 0) void ingestFiles(files);
+            }
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
@@ -861,7 +1136,7 @@ export function ChatInput() {
         />
         <button
           onClick={handleSend}
-          disabled={(!text.trim() && attachments.length === 0) || typing != null || parsing != null || comparing != null}
+          disabled={(!text.trim() && attachments.length === 0) || typing != null || parsing != null || comparing != null || planning != null}
           className="shrink-0 mb-1 w-9 h-9 rounded-md flex items-center justify-center text-white transition disabled:opacity-40"
           style={{ background: "var(--grad-brand)" }}
         >

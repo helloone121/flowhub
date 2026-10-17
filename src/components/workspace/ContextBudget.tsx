@@ -1,14 +1,18 @@
 "use client";
 
+import { useState } from "react";
 import { useFlowHub } from "@/lib/store";
 import { AI_MODELS, HANDOFF_THRESHOLD } from "@/lib/ai-meta";
 import { contextUsage, sumSessionTokens, tokensToHandoff } from "@/lib/tokens";
+import { buildHandoffSummary } from "@/lib/handoff-ai";
 
 export function ContextBudget({ sessionId }: { sessionId: string }) {
   const messages = useFlowHub((s) => s.messages[sessionId] ?? []);
   const sessions = useFlowHub((s) => s.sessions);
   const handoffSession = useFlowHub((s) => s.handoffSession);
   const prefs = useFlowHub((s) => s.prefs);
+  const apiKeys = useFlowHub((s) => s.apiKeys);
+  const [summarizing, setSummarizing] = useState(false);
 
   const session = sessions.find((x) => x.id === sessionId);
   const tokens = sumSessionTokens(messages);
@@ -17,6 +21,18 @@ export function ContextBudget({ sessionId }: { sessionId: string }) {
   const overLimit = tokens >= HANDOFF_THRESHOLD;
 
   const model = AI_MODELS[session?.model ?? "kimi"];
+
+  const handleHandoff = async () => {
+    if (summarizing) return;
+    setSummarizing(true);
+    try {
+      // AI 优先生成结构化摘要（有 key 时），无 key 回退规则版
+      const summary = await buildHandoffSummary(messages, apiKeys);
+      handoffSession(sessionId, summary);
+    } finally {
+      setSummarizing(false);
+    }
+  };
 
   return (
     <div className="flex items-center gap-3 flex-wrap">
@@ -41,28 +57,18 @@ export function ContextBudget({ sessionId }: { sessionId: string }) {
 
       {overLimit && prefs.autoHandoff && (
         <button
-          onClick={() => {
-            const summary = buildSummary(messages);
-            handoffSession(sessionId, summary);
-          }}
-          className="px-2.5 py-1 rounded-pill text-label font-medium transition"
+          onClick={handleHandoff}
+          disabled={summarizing}
+          className="px-2.5 py-1 rounded-pill text-label font-medium transition disabled:opacity-60"
           style={{
             background: "rgba(46,167,255,0.14)",
             color: "#7CC4FF",
             border: "1px solid rgba(46,167,255,0.3)",
           }}
         >
-          自动接力到新会话 →
+          {summarizing ? "AI 摘要中…" : "自动接力到新会话 →"}
         </button>
       )}
     </div>
   );
-}
-
-// 摘要生成：取最后 6 条消息压成结构化摘要
-function buildSummary(messages: { role: string; content: string }[]): string {
-  const tail = messages.slice(-6);
-  const user = tail.filter((m) => m.role === "user").map((m) => `- ${m.content.slice(0, 80)}`).join("\n");
-  const ai = tail.filter((m) => m.role === "ai").map((m) => `- ${m.content.slice(0, 80)}`).join("\n");
-  return `用户最近要点：\n${user || "（无）"}\n\nAI 已给出的关键结论：\n${ai || "（无）"}`;
 }

@@ -572,12 +572,19 @@ async function runTask(id: string) {
       const b = await runOne(t, upstream);
       blocks.push(b);
       if (!b.error && b.output) {
-        upstream += `\n\n【${b.name}】\n${b.output.slice(0, 800)}`;
+        // 结构化传递上游产出：带子任务名 + 完整要点（放宽到 2000 字，
+        // 保证下游能拿到足够上下文，而不是只看到被截断的片段）
+        upstream += `\n\n【上游子任务：${b.name}】\n${b.output.slice(0, 2000)}`;
       }
     }
   } else {
-    const rs = await Promise.all(subtasks.map((t) => runOne(t, "")));
-    blocks.push(...rs);
+    // 并发执行：分片限流（每批最多 2 个），避免对同一模型瞬时全量并发触发限流
+    const CONCURRENCY = 2;
+    for (let i = 0; i < subtasks.length; i += CONCURRENCY) {
+      const batch = subtasks.slice(i, i + CONCURRENCY);
+      const rs = await Promise.all(batch.map((t) => runOne(t, "")));
+      blocks.push(...rs);
+    }
   }
 
   // ---- 3. AI 全案汇总 ----

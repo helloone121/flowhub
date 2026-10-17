@@ -18,7 +18,8 @@ interface RouteResult {
 const KEYWORDS: Record<ModelId, string[]> = {
   deepseek: [
     "推演", "数据", "数值", "定价", "测算", "估算", "概率", "推算", "回归",
-    "分析", "对比", "预测", "推算", "统计", "ltv", "arr", "mau", "留存",
+    "分析", "对比", "预测", "统计", "ltv", "arr", "mau", "留存", "转换率",
+    "成本", "毛利", "公式", "计算",
   ],
   claude: [
     "文案", "写作", "润色", "改写", "扩写", "标题", "slogan", "宣传语",
@@ -30,19 +31,33 @@ const KEYWORDS: Record<ModelId, string[]> = {
   ],
   kimi: [
     "长文", "材料", "调研", "白皮书", "报告", "总结", "梳理", "整理",
-    "万字", "论文", "原文", "读取",
+    "万字", "论文", "原文", "读取", "精读", "解读",
   ],
 };
 
+// 长文本语境下应“压过”数值推理类的词：这些词常出现在“帮我分析这篇长文”里，
+// 此时该交给擅长长文本的 Kimi，而不是只看到“分析”就丢给 DeepSeek。
+const LONG_TEXT_SIGNALS: string[] = [
+  "这篇", "这份", "文章", "材料", "文档", "原文", "报告", "论文", "白皮书",
+  "总结", "梳理", "整理", "精读", "读取", "万字", "长文", "解读",
+];
+
 export function autoRoute(text: string): RouteResult {
   const lower = text.toLowerCase();
+  const isLong = text.length > 2000;
 
-  // 1. 长文本优先（>2000 字符直接走 Kimi）
-  if (text.length > 2000) {
+  // 1. 长文本 + 长文语境信号 → 优先 Kimi（哪怕含“分析/数据”等词）
+  //    例：>2000 字且含“总结/梳理/这篇文章”等，判定为“读长文”而非“做数值推理”
+  if (isLong && LONG_TEXT_SIGNALS.some((k) => lower.includes(k))) {
+    return { model: "kimi", reason: "长文本 + 长文语境 → Kimi" };
+  }
+
+  // 2. 纯长文本（无明确长文语境但仍超长）→ Kimi
+  if (isLong) {
     return { model: "kimi", reason: "长文本读取（>2000 字符）→ Kimi" };
   }
 
-  // 2. 关键词匹配 · 按 midjourney → claude → deepseek → kimi 顺序
+  // 3. 关键词匹配 · 按 midjourney → claude → deepseek → kimi 顺序
   //    （图像最特化，先判；长文兜底）
   const order: ModelId[] = ["midjourney", "claude", "deepseek"];
   for (const m of order) {
@@ -55,7 +70,7 @@ export function autoRoute(text: string): RouteResult {
     }
   }
 
-  // 3. 默认走 Kimi（长文本兜底）
+  // 4. 默认走 Kimi（长文本兜底）
   return { model: "kimi", reason: "默认路由 → Kimi" };
 }
 

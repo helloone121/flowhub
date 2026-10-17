@@ -12,6 +12,8 @@ interface ChatBody {
   stream?: boolean;
   /** "json" 时透传 response_format（DeepSeek JSON mode） */
   responseFormat?: "json";
+  /** 输出上限（token） */
+  maxTokens?: number;
 }
 
 /**
@@ -74,6 +76,10 @@ export async function POST(
       // DeepSeek 等支持 JSON mode：要求输出严格 JSON
       ...(body.responseFormat === "json"
         ? { response_format: { type: "json_object" } }
+        : {}),
+      // 输出上限（策划/质检等短调用用，控制成本）
+      ...(body.maxTokens && body.maxTokens > 0
+        ? { max_tokens: Math.min(8000, Math.round(body.maxTokens)) }
         : {}),
     }),
   });

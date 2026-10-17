@@ -45,14 +45,68 @@ export interface CompareColumn {
   error?: string;
 }
 
+/** 接力协同 · 阶段状态 */
+export type CollabPhase =
+  | "planning"
+  | "awaiting_confirm"
+  | "executing"
+  | "reviewing"
+  | "revising"
+  | "done"
+  | "error"
+  | "cancelled"
+  | "interrupted";
+
+/** 接力协同 · 结构化交接单 */
+export interface CollabBrief {
+  goal: string;
+  deliverable: string;
+  audience?: string;
+  constraints: string[];
+  questions: string[];
+  outline: string[];
+  acceptance: string[];
+  /** 原始 Markdown：编辑与执行都以它为准 */
+  raw: string;
+}
+
+/** 接力协同 · 质检问题 */
+export interface CollabIssue {
+  where: string;
+  problem: string;
+  fix: string;
+}
+
 /** 协同步骤：多 AI 接力协作中的一步 */
 export interface CollabStep {
   model: ModelId;
-  /** 阶段标签：初答 / 协同优化 / 复核优化 */
+  /** 阶段标签：策划 / 执行 / 质检 / 修订（旧版本为 初答 / 协同优化） */
   stage: string;
   content: string;
+  /** 该步实际发送给模型的 prompt，供界面折叠查看 */
+  input?: string;
   ms?: number;
+  tokens?: number;
+  costYuan?: number;
   error?: string;
+}
+
+/** 接力协同 · 一次完整协作 */
+export interface CollabRun {
+  id: string;
+  planner: ModelId;
+  executor: ModelId;
+  /** 是否开启 DeepSeek 质检 + Kimi 修订 */
+  deepReview: boolean;
+  phase: CollabPhase;
+  /** 用户最初的想法（重新策划时复用） */
+  sourceText: string;
+  brief?: CollabBrief;
+  /** 用户在确认阶段补充的内容 */
+  userNote?: string;
+  steps: CollabStep[];
+  issues?: CollabIssue[];
+  createdAt: number;
 }
 
 /** 单条消息 */
@@ -64,10 +118,14 @@ export interface ChatMessage {
   color?: string;
   time?: string;
   tokens?: number; // 本条消息估算 token 数
+  /** 用户消息携带的截图/图片（降级压缩后的 dataURL，最多 4 张） */
+  images?: string[];
   /** 多模型对比轮：存在时 MessageList 渲染并排结果 */
   compare?: CompareColumn[];
-  /** 多 AI 协同轮：存在时 MessageList 按步骤串行渲染协作链 */
+  /** 多 AI 协同轮（旧版两步接力）：存在时 MessageList 按步骤串行渲染协作链 */
   collab?: CollabStep[];
+  /** 接力协同轮：策划 → 确认 → 执行 → 质检的完整流程 */
+  collabRun?: CollabRun;
 }
 
 /** 持久记忆 */

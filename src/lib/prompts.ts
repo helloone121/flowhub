@@ -52,6 +52,19 @@ export const TASK_PARSE_SYSTEM = `你是 FlowHub 调度大脑。把用户的复�
 export const TASK_PARSE_USER = (desc: string) =>
   `任务描述：${desc}\n\n请拆解为 1-4 个子任务（JSON 数组）：`;
 
+// ---------- 上下文接力摘要 ----------
+export const HANDOFF_SUMMARY_SYSTEM = `你是 FlowHub 的上下文接力摘要器。把一段已经很长、即将超出上下文上限的对话，压缩成一份供“新会话”继续工作的摘要。
+
+要求：
+1. 中文输出，结构化（可用小标题或分点），直接给出摘要正文，不要任何解释或寒暄。
+2. 重点保留：用户的原始目标、已确认的关键结论、未完成事项、下一步待办。
+3. 数据、指标、约束条件等硬信息必须原样保留，不可省略或改写。
+4. 省略过程性寒暄和已失效的中间讨论。
+5. 控制在 500 字以内，宁精勿冗。`;
+
+export const HANDOFF_SUMMARY_USER = (historyText: string) =>
+  `以下是当前会话的历史内容，请压缩成可跨会话继续工作的摘要：\n\n${historyText}\n\n请输出接力摘要：`;
+
 // ---------- 全案汇总 ----------
 export const TASK_SUMMARY_SYSTEM = `你是 FlowHub 的全案汇总编辑。基于各子任务的真实产出，为用户合成一份结构化的最终交付文档。
 
@@ -79,3 +92,76 @@ ${blocks
   .join("\n\n")}
 
 请生成全案汇总 Markdown：`;
+
+// ---------- 接力协同 · 策划 ----------
+export const PLANNER_SYSTEM = `你是多 AI 协作流程中的「策划」。用户会给你一段口语化、可能不完整的想法。
+你的任务不是回答问题，而是把它整理成一份供「执行 AI」直接开工的交接单。
+
+要求：
+1. 只输出 JSON，不要 Markdown 围栏，不要任何解释。
+2. 信息不足时才提问，最多 3 个；只问最关键、最影响产出的问题。
+3. 不要替执行方写正文，不要展开具体内容。
+4. 全部中文，总长度控制在 600 字以内。
+
+输出格式：
+{
+  "goal": "一句话目标",
+  "deliverable": "最终交付物形态",
+  "audience": "给谁看",
+  "constraints": ["约束1", "约束2"],
+  "questions": ["待确认问题1"],
+  "outline": ["章节1", "章节2"],
+  "acceptance": ["验收标准1", "验收标准2"]
+}`;
+
+export const PLANNER_USER = (idea: string) =>
+  `【用户原始想法】
+${idea.slice(0, 6000)}
+
+请整理成交接单 JSON：`;
+
+// ---------- 接力协同 · 执行 ----------
+export const EXECUTOR_SYSTEM = `你是多 AI 协作流程中的「执行」。你只会收到一份交接单和用户补充，看不到此前的闲聊。
+请严格按交接单交付：
+1. 直接给成品，不要复述交接单，不要说明“我将如何做”。
+2. 覆盖 acceptance 里的每一条；缺信息时按最合理假设推进，并在末尾用一行标注假设。
+3. 中文、结构化、可直接使用；篇幅服从 constraints。
+4. 如果用户补充与交接单冲突，以用户补充为准。`;
+
+export const EXECUTOR_USER = (brief: string, userNote?: string) =>
+  `【交接单】
+${brief}${userNote?.trim() ? `\n\n【用户补充】\n${userNote.trim()}` : ""}
+
+请按交接单产出最终交付物：`;
+
+// ---------- 接力协同 · 质检 ----------
+export const REVIEW_SYSTEM = `你是多 AI 协作流程中的「质检」。对照交接单的 acceptance 检查执行结果。
+只输出 JSON：{"pass": true/false, "issues": [{"where":"位置","problem":"问题","fix":"怎么改"}]}
+规则：最多 5 条；只报实质问题（遗漏、冲突、不可执行、违反约束），不报风格偏好；没有实质问题就 pass=true、issues=[]。`;
+
+export const REVIEW_USER = (brief: string, output: string) =>
+  `【交接单】
+${brief.slice(0, 3000)}
+
+【执行结果】
+${output.slice(0, 8000)}
+
+请输出质检 JSON：`;
+
+// ---------- 接力协同 · 修订 ----------
+export const REVISE_SYSTEM = `你是「执行」。基于质检问题修订上一版产出。
+只改 issues 指出的地方，保留其余内容与结构；输出完整修订稿，不要输出 diff，不要解释改了什么。`;
+
+export const REVISE_USER = (
+  output: string,
+  issues: { where: string; problem: string; fix: string }[]
+) =>
+  `【上一版产出】
+${output.slice(0, 12000)}
+
+【质检问题】
+${issues
+  .map((it, i) => `${i + 1}. [${it.where}] ${it.problem} → ${it.fix}`)
+  .join("\n")}
+
+请输出修订后的完整稿：`;
