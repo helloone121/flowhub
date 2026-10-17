@@ -242,7 +242,14 @@ export function CollabTimeline({
       patchPhase("done");
     }
     if (afterExec.brief) {
-      setSessionBrief(sessionId, afterExec.brief, afterExec.executor);
+      // 固定给后续追问的简报要带上用户补充，否则下一轮会丢约束
+      const pinned = userNote?.trim()
+        ? {
+            ...afterExec.brief,
+            raw: `${afterExec.brief.raw}\n\n【用户补充】\n${userNote.trim()}`,
+          }
+        : afterExec.brief;
+      setSessionBrief(sessionId, pinned, afterExec.executor);
     }
   }
 
