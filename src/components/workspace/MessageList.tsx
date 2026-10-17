@@ -115,6 +115,61 @@ export function MessageList() {
               </div>
             );
           }
+          // 多 AI 协同轮：串行渲染协作链
+          if (m.collab && m.collab.length > 0) {
+            return (
+              <div key={m.id} className="mb-5 animate-fade-up">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-body-sm font-semibold" style={{ color: "#B4A7FF" }}>
+                    AI 协同
+                  </span>
+                  <span className="text-tag text-text-muted">{m.collab.length} 步接力</span>
+                </div>
+                <div className="space-y-2">
+                  {m.collab.map((st, i) => {
+                    const c = AI_MODELS[st.model ?? "kimi"].color;
+                    return (
+                      <div
+                        key={i}
+                        className="rounded-xl px-3.5 py-3"
+                        style={{
+                          background: "rgba(255,255,255,0.04)",
+                          borderLeft: `3px solid ${c}`,
+                        }}
+                      >
+                        <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                          <span className="rounded-pill" style={{ width: 7, height: 7, background: c }} />
+                          <span className="text-label font-semibold" style={{ color: c }}>
+                            {AI_MODELS[st.model ?? "kimi"].name}
+                          </span>
+                          <span
+                            className="text-tag px-1.5 py-0.5 rounded"
+                            style={{ background: `${c}22`, color: c }}
+                          >
+                            {st.stage}
+                          </span>
+                          {st.ms != null && (
+                            <span className="text-tag text-text-disabled">
+                              {(st.ms / 1000).toFixed(1)}s
+                            </span>
+                          )}
+                        </div>
+                        {st.error ? (
+                          <div className="text-label" style={{ color: "#FF5C5C" }}>
+                            执行失败：{st.error}
+                          </div>
+                        ) : (
+                          <div className="text-body text-text-tertiary leading-[22px] whitespace-pre-line">
+                            {st.content}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          }
           const aiColor = m.color ?? model.color;
           return (
             <div key={m.id} className="mb-5 animate-fade-up">
@@ -225,6 +280,18 @@ function renderMessages(messages: ChatMessage[]): string {
       parts.push(
         `<div class="msg-user"><div class="bubble-user">${esc(stripAttachments(m.content))}</div></div>`
       );
+      continue;
+    }
+    if (m.collab && m.collab.length > 0) {
+      for (const st of m.collab) {
+        const sName = `${AI_MODELS[st.model ?? "kimi"].name} · ${st.stage}`;
+        const sColor = st.error ? "#999" : AI_MODELS[st.model ?? "kimi"].color;
+        parts.push(
+          `<div class="msg-ai"><div class="ai-head"><span class="dot" style="background:${sColor}"></span><span style="color:${sColor}">${esc(sName)}</span></div><div class="ai-body">${esc(
+            st.error ? `执行失败：${st.error}` : st.content
+          )}</div></div>`
+        );
+      }
       continue;
     }
     if (m.compare && m.compare.length > 0) {

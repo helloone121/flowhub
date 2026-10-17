@@ -187,6 +187,13 @@ export function buildHistoryForModel(
       out.push({ role: "user", content: m.content });
       continue;
     }
+    // 协同轮：取该模型最近一步有效产出作为其历史回答
+    if (m.collab) {
+      const steps = m.collab.filter((st) => st.model === model && !st.error && st.content);
+      const last = steps[steps.length - 1];
+      if (last) out.push({ role: "assistant", content: last.content });
+      continue;
+    }
     if (m.compare) {
       const col = m.compare.find((c) => c.model === model);
       if (col && col.content && !col.error) {

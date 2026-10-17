@@ -8,7 +8,7 @@ import { streamChat, buildHistoryForModel } from "@/lib/ai-client";
 import { extractPdfText } from "@/lib/pdf";
 import { extractDocxText } from "@/lib/docx";
 import { pickHelper, extractMemories, buildMemoryContext } from "@/lib/memory-ai";
-import type { CompareColumn, ModelId } from "@/lib/types";
+import type { CompareColumn, CollabStep, ModelId } from "@/lib/types";
 import { toast } from "@/components/ui";
 import { useNewTaskModal } from "@/components/modals";
 
@@ -44,8 +44,8 @@ export function ChatInput() {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [parsing, setParsing] = useState<string | null>(null);
-  // 单聊 / 多模型对比
-  const [mode, setMode] = useState<"single" | "compare">("single");
+  // 单聊 / 多模型对比 / AI 协同
+  const [mode, setMode] = useState<"single" | "compare" | "collab">("single");
   const [compareModels, setCompareModels] = useState<ModelId[]>(["kimi", "deepseek"]);
   const [comparing, setComparing] = useState<CompareColumn[] | null>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -246,6 +246,113 @@ export function ChatInput() {
     setText("");
     setAttachments([]);
 
+    // ---------- 协同模式：A 初答 → B 纠错优化（接力协作，非并排对比） ----------
+    if (mode === "collab") {
+      const pool = REAL_MODELS.filter(
+        (m) => (apiKeys[m as keyof typeof apiKeys] ?? "").length > 0
+      );
+      if (pool.length === 0) {
+        pushAiMessage(sessionId, {
+          role: "ai",
+          model: "kimi",
+          color: AI_MODELS.kimi.color,
+          time: nowHHMM(),
+          content: "协同模式至少需要一个已配置的 API key（Kimi 或 DeepSeek）。请在「设置」页填入后重试。",
+        });
+        return;
+      }
+      // 首答优先用当前选中的真实模型，否则回退 Kimi
+      const first: "kimi" | "deepseek" = pool.includes(currentModel as "kimi" | "deepseek")
+        ? (currentModel as "kimi" | "deepseek")
+        : (pool[0] as "kimi" | "deepseek");
+      // 只配置了一个 key 时，由同一模型自我复核
+      const second = (pool.find((m) => m !== first) ?? first) as "kimi" | "deepseek";
+      const solo = second === first;
+
+      const runStep = (m: "kimi" | "deepseek", userContent: string, systemHint: string) =>
+        new Promise<CollabStep>((resolve) => {
+          const color = AI_MODELS[m].color;
+          let acc = "";
+          const t0 = performance.now();
+          setTyping({ model: m, color, content: "" });
+          const msgs = buildHistoryForModel(history, m, systemHint);
+          msgs.push({ role: "user", content: userContent });
+          streamChat(
+            {
+              provider: m,
+              apiKey: apiKeys[m as keyof typeof apiKeys] ?? "",
+              messages: msgs,
+            },
+            {
+              onToken: (delta) => {
+                acc += delta;
+                setTyping({ model: m, color, content: acc });
+              },
+              onDone: (full) =>
+                resolve({
+                  model: m,
+                  stage: "",
+                  content: full || acc,
+                  ms: Math.round(performance.now() - t0),
+                }),
+              onError: (err) =>
+                resolve({
+                  model: m,
+                  stage: "",
+                  content: acc,
+                  ms: Math.round(performance.now() - t0),
+                  error: err,
+                }),
+            }
+          );
+        });
+
+      // 第 1 步：初答
+      const step1 = await runStep(first, composed, hintWithMemory(composed));
+      if (step1.error && !step1.content) {
+        pushAiMessage(sessionId, {
+          role: "ai",
+          model: first,
+          color: AI_MODELS[first].color,
+          time: nowHHMM(),
+          content: `调用失败：${step1.error}`,
+        });
+        return;
+      }
+
+      // 第 2 步：协作者基于初稿纠错优化（单 key 时为自我复核）
+      const memCtx2 = buildMemoryContext(memories, composed);
+      const stage2 = solo ? "复核优化" : "协同优化";
+      const sys2 = `${BASE_HINT}\n\n你处于多 AI 协同模式：${
+        solo ? "你自己的初稿" : `另一位 AI（${AI_MODELS[first].name}）`
+      }已给出初稿。请先用 1-2 句指出初稿的问题或遗漏，再给出你修正与补充后的完整最终答案；不要原样复述初稿。${
+        memCtx2 ? `\n\n${memCtx2}` : ""
+      }`;
+      const step2 = await runStep(
+        second,
+        `${t}\n\n【协作者初稿】\n${step1.content}`,
+        sys2
+      );
+
+      const steps: CollabStep[] = [
+        { ...step1, stage: "初答" },
+        { ...step2, stage: stage2 },
+      ];
+      pushAiMessage(sessionId, {
+        role: "ai",
+        time: nowHHMM(),
+        content: "",
+        collab: steps,
+      });
+
+      // 取最优一步抽记忆
+      const best = [...steps]
+        .filter((s) => !s.error && s.content)
+        .sort((a, b) => b.content.length - a.content.length)[0];
+      if (best) void maybeExtractMemories(composed, best.content);
+      return;
+    }
+
     // ---------- 对比模式：同一句话并发给多个真实模型 ----------
     if (mode === "compare") {
       const models = compareModels.filter(
@@ -429,6 +536,7 @@ export function ChatInput() {
             [
               ["single", "单聊"],
               ["compare", "⚡ 多模型对比"],
+              ["collab", "🤝 AI 协同"],
             ] as const
           ).map(([id, label]) => {
             const active = mode === id;
@@ -484,6 +592,11 @@ export function ChatInput() {
               同一句话并发多答 · 结果并排对比
             </span>
           </>
+        )}
+        {mode === "collab" && (
+          <span className="text-tag text-text-disabled">
+            接力协同：A 初答 → B 纠错优化，合并为一条回复
+          </span>
         )}
       </div>
 

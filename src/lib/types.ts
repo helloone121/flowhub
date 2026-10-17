@@ -45,6 +45,16 @@ export interface CompareColumn {
   error?: string;
 }
 
+/** 协同步骤：多 AI 接力协作中的一步 */
+export interface CollabStep {
+  model: ModelId;
+  /** 阶段标签：初答 / 协同优化 / 复核优化 */
+  stage: string;
+  content: string;
+  ms?: number;
+  error?: string;
+}
+
 /** 单条消息 */
 export interface ChatMessage {
   id: string;
@@ -56,6 +66,8 @@ export interface ChatMessage {
   tokens?: number; // 本条消息估算 token 数
   /** 多模型对比轮：存在时 MessageList 渲染并排结果 */
   compare?: CompareColumn[];
+  /** 多 AI 协同轮：存在时 MessageList 按步骤串行渲染协作链 */
+  collab?: CollabStep[];
 }
 
 /** 持久记忆 */
