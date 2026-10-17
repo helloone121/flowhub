@@ -702,6 +702,104 @@ export function ChatInput() {
         </div>
       )}
 
+      {/* typing 指示气泡（置于输入框上方，保证输入框始终贴底） */}
+      {typing && (
+        <div className="mt-3 mb-2 animate-fade-up">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="rounded-pill" style={{ width: 8, height: 8, background: typing.color }} />
+            <span className="text-body-sm font-semibold" style={{ color: typing.color }}>
+              {AI_MODELS[typing.model].name}
+            </span>
+            <button
+              onClick={() => abortRef.current?.abort()}
+              className="ml-auto text-tag text-text-muted hover:text-text-primary transition"
+            >
+              取消
+            </button>
+          </div>
+          {typing.content ? (
+            <div
+              className="text-body text-text-tertiary leading-[22px] whitespace-pre-line overflow-y-auto"
+              style={{ maxHeight: 220 }}
+            >
+              {typing.content}
+              <span className="inline-block w-1.5 h-3 ml-0.5 align-middle animate-pulse-soft" style={{ background: typing.color }} />
+            </div>
+          ) : (
+            <div className="flex items-center gap-1">
+              <span className="typing-dot" />
+              <span className="typing-dot" />
+              <span className="typing-dot" />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 多模型对比 · 流式进行中（置于输入框上方，保证输入框始终贴底） */}
+      {comparing && (
+        <div className="mt-3 mb-2 animate-fade-up">
+          <div className="flex items-center gap-2 mb-2.5">
+            <span className="text-body-sm font-semibold text-text-secondary">
+              多模型对比
+            </span>
+            <span className="text-tag text-text-muted">
+              {comparing.length} 路同时回答中…
+            </span>
+            <button
+              onClick={() => abortRef.current?.abort()}
+              className="ml-auto text-tag text-text-muted hover:text-text-primary transition"
+            >
+              取消
+            </button>
+          </div>
+          <div
+            className="grid gap-3"
+            style={{
+              gridTemplateColumns: `repeat(${Math.min(comparing.length, 2)}, minmax(0, 1fr))`,
+            }}
+          >
+            {comparing.map((c) => {
+              const color = AI_MODELS[c.model].color;
+              return (
+                <div
+                  key={c.model}
+                  className="rounded-2xl px-3.5 py-3 min-h-[72px]"
+                  style={{
+                    background: "rgba(255,255,255,0.04)",
+                    border: `1px solid ${color}33`,
+                  }}
+                >
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <span className="rounded-pill" style={{ width: 7, height: 7, background: color }} />
+                    <span className="text-label font-semibold" style={{ color }}>
+                      {AI_MODELS[c.model].name}
+                    </span>
+                  </div>
+                  {c.content ? (
+                    <div
+                      className="text-body-sm text-text-tertiary leading-[21px] whitespace-pre-line overflow-y-auto"
+                      style={{ maxHeight: 220 }}
+                    >
+                      {c.content}
+                      <span
+                        className="inline-block w-1.5 h-3 ml-0.5 align-middle animate-pulse-soft"
+                        style={{ background: color }}
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1">
+                      <span className="typing-dot" />
+                      <span className="typing-dot" />
+                      <span className="typing-dot" />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       <div
         className="flex items-end gap-3 rounded-2xl px-3.5 py-2 transition"
         style={{
@@ -788,98 +886,6 @@ export function ChatInput() {
         <span>·</span>
         <span>当前模型 {AI_MODELS[currentModel].name}</span>
       </div>
-
-      {/* typing 指示气泡 */}
-      {typing && (
-        <div className="mt-4 mb-1 animate-fade-up">
-          <div className="flex items-center gap-2 mb-2">
-            <span className="rounded-pill" style={{ width: 8, height: 8, background: typing.color }} />
-            <span className="text-body-sm font-semibold" style={{ color: typing.color }}>
-              {AI_MODELS[typing.model].name}
-            </span>
-            <button
-              onClick={() => abortRef.current?.abort()}
-              className="ml-auto text-tag text-text-muted hover:text-text-primary transition"
-            >
-              取消
-            </button>
-          </div>
-          {typing.content ? (
-            <div className="text-body text-text-tertiary leading-[22px] whitespace-pre-line">
-              {typing.content}
-              <span className="inline-block w-1.5 h-3 ml-0.5 align-middle animate-pulse-soft" style={{ background: typing.color }} />
-            </div>
-          ) : (
-            <div className="flex items-center gap-1">
-              <span className="typing-dot" />
-              <span className="typing-dot" />
-              <span className="typing-dot" />
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* 多模型对比 · 流式进行中 */}
-      {comparing && (
-        <div className="mt-4 mb-1 animate-fade-up">
-          <div className="flex items-center gap-2 mb-2.5">
-            <span className="text-body-sm font-semibold text-text-secondary">
-              多模型对比
-            </span>
-            <span className="text-tag text-text-muted">
-              {comparing.length} 路同时回答中…
-            </span>
-            <button
-              onClick={() => abortRef.current?.abort()}
-              className="ml-auto text-tag text-text-muted hover:text-text-primary transition"
-            >
-              取消
-            </button>
-          </div>
-          <div
-            className="grid gap-3"
-            style={{
-              gridTemplateColumns: `repeat(${Math.min(comparing.length, 2)}, minmax(0, 1fr))`,
-            }}
-          >
-            {comparing.map((c) => {
-              const color = AI_MODELS[c.model].color;
-              return (
-                <div
-                  key={c.model}
-                  className="rounded-2xl px-3.5 py-3 min-h-[72px]"
-                  style={{
-                    background: "rgba(255,255,255,0.04)",
-                    border: `1px solid ${color}33`,
-                  }}
-                >
-                  <div className="flex items-center gap-2 mb-1.5">
-                    <span className="rounded-pill" style={{ width: 7, height: 7, background: color }} />
-                    <span className="text-label font-semibold" style={{ color }}>
-                      {AI_MODELS[c.model].name}
-                    </span>
-                  </div>
-                  {c.content ? (
-                    <div className="text-body-sm text-text-tertiary leading-[21px] whitespace-pre-line">
-                      {c.content}
-                      <span
-                        className="inline-block w-1.5 h-3 ml-0.5 align-middle animate-pulse-soft"
-                        style={{ background: color }}
-                      />
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-1">
-                      <span className="typing-dot" />
-                      <span className="typing-dot" />
-                      <span className="typing-dot" />
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
