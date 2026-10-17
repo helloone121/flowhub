@@ -50,6 +50,8 @@ export function ChatInput() {
   const [comparing, setComparing] = useState<CompareColumn[] | null>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  // 当前生成任务的取消控制器（单聊/对比/协同共用）
+  const abortRef = useRef<AbortController | null>(null);
 
   // store
   const currentSessionId = useFlowHub((s) => s.currentSessionId);
@@ -262,6 +264,7 @@ export function ChatInput() {
         return;
       }
       // 首答优先用当前选中的真实模型，否则回退 Kimi
+      abortRef.current = new AbortController();
       const first: "kimi" | "deepseek" = pool.includes(currentModel as "kimi" | "deepseek")
         ? (currentModel as "kimi" | "deepseek")
         : (pool[0] as "kimi" | "deepseek");
@@ -282,6 +285,7 @@ export function ChatInput() {
               provider: m,
               apiKey: apiKeys[m as keyof typeof apiKeys] ?? "",
               messages: msgs,
+              signal: abortRef.current?.signal,
             },
             {
               onToken: (delta) => {
@@ -375,6 +379,7 @@ export function ChatInput() {
       const acc: Record<string, string> = {};
       const errs: Record<string, string> = {};
       const startedAt: Record<string, number> = {};
+      abortRef.current = new AbortController();
       setComparing(models.map((m) => ({ model: m, content: "" })));
 
       await Promise.all(
@@ -389,6 +394,7 @@ export function ChatInput() {
                   provider: model,
                   messages: msgs,
                   apiKey: apiKeys[model as keyof typeof apiKeys] ?? "",
+                  signal: abortRef.current?.signal,
                 },
                 {
                   onToken: (delta) => {
@@ -473,6 +479,8 @@ export function ChatInput() {
     }
 
     // 4. 流式调用（携带记忆上下文）
+    const ac = new AbortController();
+    abortRef.current = ac;
     setTyping({ model, color: meta.color, content: "" });
     const msgs = buildHistoryForModel(history, model, hintWithMemory(composed));
     msgs.push({ role: "user", content: composed });
@@ -483,6 +491,7 @@ export function ChatInput() {
         provider: model,
         messages: msgs,
         apiKey: apiKeys[model as keyof typeof apiKeys] ?? "",
+        signal: ac.signal,
       },
       {
         onToken: (delta) => {
@@ -491,6 +500,7 @@ export function ChatInput() {
         },
         onDone: (full) => {
           setTyping(null);
+          abortRef.current = null;
           const text2 = full || acc;
           pushAiMessage(sessionId, {
             role: "ai",
@@ -503,6 +513,7 @@ export function ChatInput() {
         },
         onError: (err) => {
           setTyping(null);
+          abortRef.current = null;
           pushAiMessage(sessionId, {
             role: "ai",
             model,
@@ -786,6 +797,12 @@ export function ChatInput() {
             <span className="text-body-sm font-semibold" style={{ color: typing.color }}>
               {AI_MODELS[typing.model].name}
             </span>
+            <button
+              onClick={() => abortRef.current?.abort()}
+              className="ml-auto text-tag text-text-muted hover:text-text-primary transition"
+            >
+              取消
+            </button>
           </div>
           {typing.content ? (
             <div className="text-body text-text-tertiary leading-[22px] whitespace-pre-line">
@@ -812,6 +829,12 @@ export function ChatInput() {
             <span className="text-tag text-text-muted">
               {comparing.length} 路同时回答中…
             </span>
+            <button
+              onClick={() => abortRef.current?.abort()}
+              className="ml-auto text-tag text-text-muted hover:text-text-primary transition"
+            >
+              取消
+            </button>
           </div>
           <div
             className="grid gap-3"

@@ -16,6 +16,7 @@ export interface ChatRequest {
   messages: { role: "system" | "user" | "assistant"; content: string }[];
   apiKey?: string; // 个人 MVP：从 localStorage 带过来，Route Handler 优先用 env
   systemHint?: string;
+  signal?: AbortSignal; // 外部取消用
 }
 
 export interface ChatStreamHandlers {
@@ -33,6 +34,23 @@ export async function streamChat(
   handlers: ChatStreamHandlers
 ): Promise<void> {
   const meta = AI_MODELS[req.provider];
+  // 超时与取消：空闲 60s 无新内容或总时长 180s 自动中断，避免界面永久卡在"生成中"
+  const controller = new AbortController();
+  const onExternalAbort = () => controller.abort();
+  if (req.signal) {
+    if (req.signal.aborted) controller.abort();
+    else req.signal.addEventListener("abort", onExternalAbort);
+  }
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const resetIdle = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => controller.abort(), 60_000);
+  };
+  const overallTimer = setTimeout(() => controller.abort(), 180_000);
+  resetIdle();
+  const abortReason = () =>
+    req.signal?.aborted ? "已取消" : "响应超时（网络无响应或服务不可达），请重试";
+
   try {
     const res = await fetch(`/api/chat/${req.provider}`, {
       method: "POST",
@@ -43,6 +61,7 @@ export async function streamChat(
         systemHint: req.systemHint,
         model: meta.model,
       }),
+      signal: controller.signal,
     });
 
     if (!res.ok || !res.body) {
@@ -59,6 +78,7 @@ export async function streamChat(
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      resetIdle();
       buffer += decoder.decode(value, { stream: true });
 
       // 按 \n\n 切 SSE event
@@ -93,8 +113,16 @@ export async function streamChat(
     }
     handlers.onDone(full);
   } catch (e: unknown) {
+    if (controller.signal.aborted) {
+      handlers.onError(abortReason());
+      return;
+    }
     const msg = e instanceof Error ? e.message : String(e);
     handlers.onError(msg);
+  } finally {
+    if (idleTimer) clearTimeout(idleTimer);
+    clearTimeout(overallTimer);
+    if (req.signal) req.signal.removeEventListener("abort", onExternalAbort);
   }
 }
 
