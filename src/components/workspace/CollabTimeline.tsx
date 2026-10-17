@@ -725,6 +725,22 @@ function BriefPreview({ brief }: { brief: CollabBrief }) {
     ["交付物", brief.deliverable],
     ["受众", brief.audience ?? ""],
   ];
+  const hasFields =
+    rows.some(([, v]) => v) ||
+    brief.constraints.length > 0 ||
+    brief.questions.length > 0 ||
+    brief.outline.length > 0 ||
+    brief.acceptance.length > 0;
+
+  // 策划返回了非 JSON 时，字段为空但 raw 有内容：直接展示原文，避免空白卡片
+  if (!hasFields) {
+    return (
+      <div className="text-body-sm text-text-tertiary leading-[21px] whitespace-pre-line">
+        {brief.raw || "（策划未返回可解析内容，可直接编辑交接单）"}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-1.5">
       {rows
