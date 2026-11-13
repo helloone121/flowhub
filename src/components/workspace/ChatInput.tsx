@@ -4,11 +4,13 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useFlowHub } from "@/lib/store";
 import { AI_MODELS } from "@/lib/ai-meta";
 import { autoRoute } from "@/lib/routing";
+import { routeWithAI } from "@/lib/ai-route";
 import { streamChat, buildHistoryForModel, type ChatContent } from "@/lib/ai-client";
 import { makeStep, planBrief } from "@/lib/collab-ai";
 import { PLANNER_USER } from "@/lib/prompts";
 import { extractPdfText } from "@/lib/pdf";
 import { extractDocxText } from "@/lib/docx";
+import { extractXlsxText } from "@/lib/xlsx";
 import { pickHelper, extractMemories, buildMemoryContext } from "@/lib/memory-ai";
 import type { CompareColumn, CollabRun, ModelId } from "@/lib/types";
 import { toast } from "@/components/ui";
@@ -32,6 +34,8 @@ const SINGLE_LIMIT = 200 * 1024; // 文本单文件 200KB
 const TOTAL_LIMIT = 500 * 1024; // 文本附件合计 500KB
 const PDF_FILE_LIMIT = 5 * 1024 * 1024; // PDF 文件 ≤5MB
 const DOCX_FILE_LIMIT = 5 * 1024 * 1024; // Word 文件 ≤5MB
+const XLSX_FILE_LIMIT = 5 * 1024 * 1024; // Excel 文件 ≤5MB
+const XLSX_TEXT_LIMIT = 100_000; // Excel 提取文字 ≤10 万字
 const DOCX_TEXT_LIMIT = 100_000; // Word 提取文字 ≤10 万字
 const PDF_TEXT_LIMIT = 100_000; // PDF 提取文字 ≤10 万字
 const IMAGE_FILE_LIMIT = 8 * 1024 * 1024; // 图片原图 ≤8MB（压缩后远小于此）
@@ -39,7 +43,7 @@ const IMAGE_MAX_COUNT = 4; // 每条消息最多 4 张图片
 const IMAGE_MAX_WIDTH = 1280; // 截图/图片最长边压到 1280px
 const IMAGE_QUALITY = 0.72; // JPEG 压缩质量
 const ACCEPT =
-  ".txt,.md,.markdown,.csv,.json,.log,.xml,.yaml,.yml,.html,.htm,.css,.js,.mjs,.cjs,.ts,.tsx,.jsx,.py,.java,.go,.rs,.c,.h,.cpp,.cc,.sql,.sh,.bash,.ini,.conf,.toml,.env,.vue,.php,.rb,.swift,.kt,.pdf,.docx,.png,.jpg,.jpeg,.webp,text/*,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/png,image/jpeg,image/webp";
+  ".txt,.md,.markdown,.csv,.json,.log,.xml,.yaml,.yml,.html,.htm,.css,.js,.mjs,.cjs,.ts,.tsx,.jsx,.py,.java,.go,.rs,.c,.h,.cpp,.cc,.sql,.sh,.bash,.ini,.conf,.toml,.env,.vue,.php,.rb,.swift,.kt,.pdf,.docx,.xlsx,.xlsm,.png,.jpg,.jpeg,.webp,text/*,application/json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,image/png,image/jpeg,image/webp";
 const TEXT_EXT = [
   "txt","md","markdown","csv","json","log","xml","yaml","yml","html","htm","css",
   "js","mjs","cjs","ts","tsx","jsx","py","java","go","rs","c","h","cpp","cc","sql",
@@ -156,6 +160,11 @@ export function ChatInput() {
           ext === "docx" ||
           f.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
         const isLegacyDoc = ext === "doc";
+        const isXlsx =
+          ext === "xlsx" ||
+          ext === "xlsm" ||
+          f.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        const isLegacyXls = ext === "xls";
         const isText =
           TEXT_EXT.includes(ext) || f.type.startsWith("text/") || f.type === "application/json";
 
@@ -190,6 +199,40 @@ export function ChatInput() {
           continue;
         }
 
+
+        // ---------- Excel 分支：JSZip 本地解包读取工作表 ----------
+        if (isXlsx || isLegacyXls) {
+          if (isLegacyXls) {
+            toast(`「${f.name}」是旧版 .xls 格式，请先在 Excel 里另存为 .xlsx 再上传`, "#F5C542");
+            continue;
+          }
+          if (f.size > XLSX_FILE_LIMIT) {
+            toast(`「${f.name}」超过 5MB 上限`, "#FF5C5C");
+            continue;
+          }
+          setParsing(f.name);
+          try {
+            const { text: xlsxText, sheets, warnings } = await extractXlsxText(f, XLSX_TEXT_LIMIT);
+            if (xlsxText.trim().length < 10) {
+              toast(`「${f.name}」未读取到数据，可能是空表格`, "#F5C542");
+            } else {
+              added.push({
+                name: f.name,
+                size: f.size,
+                content: xlsxText,
+                meta: `Excel · ${sheets} 个工作表`,
+              });
+              if (warnings.length > 0) {
+                toast(`「${f.name}」${warnings[0]}`, "#F5C542");
+              }
+            }
+          } catch {
+            toast(`「${f.name}」Excel 解析失败（文件可能已损坏或加密）`, "#FF5C5C");
+          } finally {
+            setParsing(null);
+          }
+          continue;
+        }
 
         // ---------- PDF 分支：pdf.js 本地提取文字 ----------
         if (isPdf) {
@@ -245,7 +288,7 @@ export function ChatInput() {
 
         // ---------- 文本文件分支 ----------
         if (!isText) {
-          toast(`「${f.name}」类型暂不支持（Excel 留待后续版本）`, "#F5C542");
+          toast(`「${f.name}」类型暂不支持（支持 PDF / Word(.docx) / Excel(.xlsx) / 图片 / 文本文件）`, "#F5C542");
           continue;
         }
         if (f.size > SINGLE_LIMIT) {
@@ -559,11 +602,18 @@ export function ChatInput() {
     if (pinnedBrief) {
       if (model !== currentModel) setModel(model);
     } else if (prefs.autoRoute) {
-      const r = routeFor(composed);
+      // 先算关键词规则兜底，再尝试 AI 语义路由（有 key 时，2.5s 超时）
+      const keyword = routeFor(composed);
+      const ai = await routeWithAI(composed, apiKeys);
+      // AI 路由成功则优先采用；失败/超时/无 key 回退关键词规则
+      const r = ai ?? keyword;
       if (r.model !== currentModel) {
         setModel(r.model);
         model = r.model;
-        toast(`已自动切换：${r.reason}`, AI_MODELS[r.model].color);
+        toast(
+          ai ? `AI 智能路由：${r.reason}` : `已自动切换：${r.reason}`,
+          AI_MODELS[r.model].color
+        );
       }
     }
 
@@ -1077,7 +1127,7 @@ export function ChatInput() {
         />
         <button
           onClick={() => fileRef.current?.click()}
-          title="上传附件：PDF / Word（.docx，≤5MB，自动提取文字）、图片（≤8MB，自动压缩）或文本文件（≤200KB），也可直接拖入"
+          title="上传附件：PDF / Word(.docx) / Excel(.xlsx)（≤5MB，自动提取文字）、图片（≤8MB，自动压缩）或文本文件（≤200KB），也可直接拖入"
           className="text-text-muted hover:text-text-primary transition shrink-0 mb-1.5"
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
@@ -1157,7 +1207,7 @@ export function ChatInput() {
         <span>·</span>
         <span>输入 / 创建调度任务</span>
         <span>·</span>
-        <span>可拖入 PDF / 文本附件</span>
+        <span>可拖入 PDF / Word / Excel / 图片</span>
         <span>·</span>
         <span>当前模型 {AI_MODELS[currentModel].name}</span>
       </div>
